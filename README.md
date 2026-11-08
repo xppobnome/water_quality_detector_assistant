@@ -113,4 +113,4 @@ flutter run -d <android>   # 手机端
 
 ## 许可证
 
-暂未指定。如需开源，请补充 `LICENSE` 文件。
+[MIT](LICENSE)。
