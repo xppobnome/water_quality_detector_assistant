@@ -1,0 +1,72 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Windows 本地 OCR 引擎：打包中间产物忽略，
+# 最终可直接分发的产物 /windows/ocr_engine/ 保留在项目中。
+/python/build/
+/python/dist/
+/python/.venv_ocr/
+/python/.venv_paddle/
+/python/__pycache__/
+# 多版本打包/构建缓存（build_v2..v6、dist_v2..v6、*_log 等，单次可达 1.8G）
+/python/build*/
+/python/dist*/
+/python/build_log/
+/python/dist_log/
+/.tmp_ocr_test/
+
+# Gradle / Flutter 桌面生成产物
+/android/.gradle/
+/windows/flutter/ephemeral/
+
+# 版权与本地资料：国标 PDF 及其抽取文本不入库（受版权保护，仅本地参考）
+/.tmp_pdf/
+
+# 本机/代理运行数据（非源码）
+/.workbuddy/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Widget Preview related
+.widget_preview/

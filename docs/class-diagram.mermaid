@@ -1,0 +1,113 @@
+%% 水质检测仪助手 — 类关系图
+
+classDiagram
+    class InstrumentType {
+        <<enumeration>>
+        mcgs
+        eco
+        totalCopper
+        +String label
+        +String shortLabel
+        +bool hasChannel
+    }
+
+    class WaterQualityRow {
+        +String id
+        +InstrumentType instrument
+        +String? sampleDate
+        +String? sampleTime
+        +String? channel
+        +String? result
+        +String? unit
+        +String? blankRaw
+        +String? detectionRaw
+        +double? blank
+        +double? detection
+        +double? absorbance
+        +Map~String,String~ cells
+        +String dedupKey
+    }
+
+    class OcrParseResult {
+        +InstrumentType instrument
+        +List~WaterQualityRow~ rows
+        +List~String~ warnings
+    }
+
+    class FitPoint {
+        +double x
+        +double y
+    }
+
+    class FitResult {
+        +double slope
+        +double intercept
+        +double rSquared
+        +List~FitPoint~ points
+    }
+
+    class PeerDevice {
+        +String name
+        +String ip
+        +int port
+        +String token
+        +String platform
+    }
+
+    class TransferFile {
+        +String name
+        +int size
+        +String path
+    }
+
+    class OcrService {
+        <<interface>>
+        +recognize(List~String~, InstrumentType) Future~OcrParseResult~
+    }
+    class ExcelService {
+        +importExcel(String, InstrumentType) Future~List~WaterQualityRow~~
+        +exportExcel(List~WaterQualityRow~) Future~String~
+    }
+    class DedupService {
+        +dedup(List~WaterQualityRow~) List~WaterQualityRow~
+        +dedupKeyOf(WaterQualityRow) String
+    }
+    class FitService {
+        +calcAbsorbance(double?, double?) double?
+        +linearFit(List~FitPoint~) FitResult
+    }
+    class StorageService {
+        +double standardConcentration
+        +String standardUnit
+        +setStandardConcentration(double)
+        +setStandardUnit(String)
+    }
+    class FileTransferService {
+        +startServer() PeerDevice
+        +pairWith(PeerDevice) PeerDevice
+        +sendFile(PeerDevice, String, onProgress)
+        +Stream~TransferFile~ receivedFiles
+        +stopServer()
+    }
+    class DiscoveryService {
+        +startBroadcasting(PeerDevice)
+        +Stream~PeerDevice~ discoveredPeers
+        +startListening()
+        +stop()
+    }
+    class QrService {
+        +buildQrContent(PeerDevice) String
+        +parseQrContent(String) PeerDevice?
+    }
+
+    WaterQualityRow --> InstrumentType : instrument
+    OcrParseResult --> WaterQualityRow : rows
+    FitResult --> FitPoint : points
+    OcrService ..> OcrParseResult
+    ExcelService ..> WaterQualityRow
+    DedupService ..> WaterQualityRow
+    FitService ..> FitResult
+    FileTransferService ..> PeerDevice
+    FileTransferService ..> TransferFile
+    DiscoveryService ..> PeerDevice
+    QrService ..> PeerDevice

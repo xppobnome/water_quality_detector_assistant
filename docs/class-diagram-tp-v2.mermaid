@@ -1,0 +1,368 @@
+%% 国标验证（总磷 HJ 103—2026）重做版 v2 · 类图
+%% 对应文档：docs/ARCHITECTURE_tp_v2.md §3.1
+%% 说明：仅描述 v2 新增/变更的领域模型与计算层，不含全应用旧结构
+%%      （旧结构见 docs/class-diagram.mermaid）
+
+classDiagram
+  direction LR
+
+  class AnalysisItem {
+    <<enumeration>>
+    cod
+    tn
+    tp
+    nh3n
+    +String id
+    +String label
+    +bool hasStandard
+    +static List~AnalysisItem~ selectable
+    +static AnalysisItem? fromId(String)
+    +static AnalysisItem? fromLabel(String)
+    +static AnalysisItem? fromAny(String)
+  }
+
+  class ColumnMeta {
+    +String key
+    +String label
+    +String unit
+    +bool numeric
+    +bool usedInCalc
+    +static List~ColumnMeta~ tpDefault
+    +toJson() Map
+    +fromJson(Map)$ ColumnMeta
+  }
+
+  class Measurement {
+    +String id
+    +String? label
+    +DateTime? timestamp
+    +Map~String,double~ values
+    +Map~String,String~ raw
+    +bool valid
+    +String rawText
+    +double? get result
+    +toJson() Map
+    +fromJson(Map)$ Measurement
+  }
+
+  class Dataset {
+    +String id
+    +String name
+    +String parameter
+    +DateTime createdAt
+    +List~Measurement~ measurements
+    +List~ColumnMeta~ columns
+    +String origin
+    +String? originName
+    +List~ColumnMeta~ get effectiveColumns
+    +copyWith() Dataset
+    +toJson() Map
+    +fromJson(Map)$ Dataset
+  }
+
+  class WorkspaceFile {
+    +String id
+    +String name
+    +int size
+    +String kind
+    +DateTime createdAt
+  }
+
+  class CalcResult {
+    <<legacy>>
+    +String id
+    +String itemId
+    +String rangeKey
+    +double metricValue
+    +bool pass
+    +double limitValue
+  }
+
+  class Workspace {
+    +String id
+    +String name
+    +String parameter
+    +String item
+    +String contractNo
+    +String projectName
+    +String owner
+    +String remark
+    +bool isDraft
+    +DateTime? savedAt
+    +String status
+    +int limitsVersion
+    +DateTime createdAt
+    +List~Dataset~ datasets
+    +List~CalcResult~ results
+    +List~ItemReport~ reports
+    +Map overrideLimits
+    +List~WorkspaceFile~ files
+    +String get itemLabel
+    +String get displayName
+    +String get folderName
+    +StandardItemLimit? effectiveLimit(VerificationItem, String)
+    +Workspace asDraft()
+    +Workspace asSaved(DateTime)
+    +copyWith() Workspace
+    +toJson() Map
+    +fromJson(Map)$ Workspace
+  }
+
+  class RangeProfile {
+    +String key
+    +String label
+    +double lower
+    +double upper
+    +basic$ RangeProfile
+    +extended$ RangeProfile
+    +static RangeProfile byKey(String)
+  }
+
+  class ConcentrationLevel {
+    +String id
+    +double percent
+    +double nominal
+    +RangeProfile range
+    +String get label
+  }
+
+  class CompareMode {
+    <<enumeration>>
+    absolute
+    relative
+  }
+
+  class GbSample {
+    +double value
+    +String measurementId
+    +String datasetId
+    +DateTime? timestamp
+    +String group
+    +String specimenNo
+    +double? labMean
+  }
+
+  class GbLevelSamples {
+    +String levelId
+    +double nominal
+    +String label
+    +List~GbSample~ samples
+  }
+
+  class GbSpecimen {
+    +String no
+    +double labMean
+    +List~GbSample~ samples
+  }
+
+  class GbConsistencySlot {
+    +int index
+    +List~double~ instrumentValues
+  }
+
+  class CalcStep {
+    +int index
+    +String title
+    +String formula
+    +String substitution
+    +double rawResult
+    +String displayResult
+    +String unit
+    +String note
+  }
+
+  class SubVerdict {
+    +String key
+    +String label
+    +double rawValue
+    +String displayValue
+    +String unit
+    +double limit
+    +bool pass
+  }
+
+  class ItemReport {
+    +String id
+    +String itemId
+    +String itemName
+    +String clause
+    +String rangeKey
+    +String concentrationClass
+    +double? metricValue
+    +String metricUnit
+    +double? limitValue
+    +bool? pass
+    +String? failReason
+    +int sampleCount
+    +List~CalcStep~ steps
+    +List~SubVerdict~ subVerdicts
+    +DateTime createdAt
+    +toJson() Map
+    +fromJson(Map)$ ItemReport
+  }
+
+  class CalcInput {
+    +String datasetId
+    +String measurementId
+    +double value
+    +DateTime? timestamp
+    +String group
+    +String specimenNo
+  }
+
+  class CalcSession {
+    +String id
+    +String workspaceId
+    +String itemId
+    +String rangeKey
+    +List~CalcInput~ inputs
+    +DateTime createdAt
+  }
+
+  class GroupRequirement {
+    +String key
+    +String label
+    +double? nominal
+    +int min
+    +int exact
+    +int? max
+  }
+
+  class RequirementSpec {
+    +String itemId
+    +String clause
+    +bool requiresManualGrouping
+    +List~GroupRequirement~ groups
+  }
+
+  class DataCheck {
+    <<enumeration>>
+    insufficient
+    oversized
+    ok
+  }
+
+  class DataCheckResult {
+    +DataCheck state
+    +Map~String,int~ actualByGroup
+    +List~String~ messages
+  }
+
+  class AutoGroupResult {
+    +Map groups
+    +List~String~ warnings
+    +bool confident
+  }
+
+  class GbDataChecker {
+    +static RequirementSpec specFor(String, String)
+    +static DataCheckResult check(RequirementSpec, List~GbSample~)
+    +static AutoGroupResult autoGroupByTimeline(List~GbSample~, RequirementSpec)
+  }
+
+  class GbTpCalculator {
+    +static RangeProfile classifyRange(double)
+    +static double upperLimitOf(String)
+    +static ConcentrationLevel? classifyLevel(double, double, double)
+    +static CompareMode classifyCompare(double)
+    +static ItemReport indicationError(String, List~GbLevelSamples~, double?)
+    +static ItemReport loq(List~GbSample~, double?, double?)
+    +static ItemReport repeatability(String, List~GbLevelSamples~, double?)
+    +static ItemReport driftLow24h(List~GbSample~, double?)
+    +static ItemReport driftHigh24h(String, List~GbSample~, double?)
+    +static ItemReport memoryEffect(List~GbSample~, List~GbSample~, List~GbSample~, double?, double?)
+    +static ItemReport voltageEffect(List~GbSample~, List~GbSample~, List~GbSample~, double?)
+    +static ItemReport turbidityEffect(List~GbSample~, List~GbSample~, List~GbSample~, double?)
+    +static ItemReport temperatureEffect(List~GbSample~, List~GbSample~, List~GbSample~, List~GbSample~, List~GbSample~, double?)
+    +static ItemReport sampleComparison(List~GbSpecimen~, double?, double?)
+    +static ItemReport maintenanceCycle(List~DateTime~, double?)
+    +static ItemReport dataAvailability(int, int, double?)
+    +static ItemReport consistencyDeviation(List~GbConsistencySlot~, double?)
+  }
+
+  class GbExcelExporter {
+    +Future build(Workspace, List~ItemReport~)
+    +Future~String~ export(Workspace, List~ItemReport~, String?)
+  }
+
+  class WorkspaceDraftService {
+    +Future~bool~ hasDraft()
+    +Future~Workspace?~ load()
+    +Future~void~ save(Workspace)
+    +Future~void~ clear()
+  }
+
+  class WorkspaceStore {
+    +Future list(String?, SearchField, bool, bool)
+    +Future~Workspace?~ get(String)
+    +Future~Workspace~ create(Workspace)
+    +Future~void~ update(Workspace)
+    +Future~void~ save(Workspace)
+    +Future~void~ delete(String)
+    +Future~String?~ workspacePath(String)
+    +Future~WorkspaceFile~ addFile(String, String, String?)
+  }
+
+  class WorkspaceProvider {
+    +List~Workspace~ items
+    +Future~Workspace?~ create(String, String, String, String, String, String)
+    +Future~Workspace~ createDraft(AnalysisItem?)
+    +Future~Workspace?~ loadDraft()
+    +Future~void~ persistDraft(Workspace)
+    +Future~Workspace?~ promoteDraft(Workspace, WorkspaceFields)
+    +Future~void~ discardDraft()
+  }
+
+  class CalcSessionProvider {
+    +Workspace? workspace
+    +String itemId
+    +String rangeKey
+    +Set~String~ selectedDatasetIds
+    +Map selectedRowIds
+    +Map~String,String~ groupOverride
+    +ItemReport? lastReport
+    +void selectItem(String)
+    +void selectRange(String)
+    +void toggleDataset(String, bool)
+    +void toggleRow(String, String, bool)
+    +void setGroup(String, String)
+    +List~GbSample~ buildSamples()
+    +DataCheckResult validate()
+    +ItemReport? compute()
+  }
+
+  Workspace "1" o-- "*" Dataset
+  Workspace "1" o-- "*" CalcResult : legacy
+  Workspace "1" o-- "*" ItemReport : reports
+  Workspace "1" o-- "*" WorkspaceFile
+  Workspace ..> AnalysisItem : item 存 id
+  Dataset "1" o-- "*" Measurement
+  Dataset "1" o-- "*" ColumnMeta
+  ItemReport "1" o-- "*" CalcStep
+  ItemReport "1" o-- "*" SubVerdict
+  CalcSession "1" o-- "*" CalcInput
+  GbLevelSamples "1" o-- "*" GbSample
+  GbSpecimen "1" o-- "*" GbSample
+  GbSpecimen ..> CompareMode
+  ConcentrationLevel ..> RangeProfile
+  RequirementSpec "1" o-- "*" GroupRequirement
+  GbDataChecker ..> RequirementSpec
+  GbDataChecker ..> DataCheckResult
+  GbDataChecker ..> AutoGroupResult
+  GbTpCalculator ..> ItemReport : 产出
+  GbTpCalculator ..> GbLevelSamples
+  GbTpCalculator ..> GbSpecimen
+  GbTpCalculator ..> GbConsistencySlot
+  GbTpCalculator ..> ConcentrationLevel
+  GbTpCalculator ..> CompareMode
+  Measurement ..> GbSample : 投影
+  CalcInput ..> GbSample : 等价
+  GbExcelExporter ..> Workspace
+  GbExcelExporter ..> ItemReport
+  WorkspaceDraftService ..> Workspace
+  WorkspaceProvider ..> WorkspaceStore
+  WorkspaceProvider ..> WorkspaceDraftService
+  CalcSessionProvider ..> GbTpCalculator
+  CalcSessionProvider ..> GbDataChecker
+  CalcSessionProvider ..> CalcSession
+  CalcSessionProvider ..> Workspace

@@ -1,0 +1,75 @@
+%% 水质检测仪助手 — 关键调用流程时序图（合并）
+
+sequenceDiagram
+    participant U as 用户
+    participant P as ImageToExcelPage
+    participant V as ImageToExcelProvider
+    participant O as OcrService
+    participant R as OcrParser(utils)
+    participant D as DedupService
+    participant E as ExcelService
+
+    U->>P: 拍照/多选图片 + 选仪器类型
+    P->>V: recognize(imagePaths, type)
+    V->>O: recognize(...)（仅 Android）
+    O-->>V: 原始 OCR 文本
+    V->>R: parse(text, type)
+    R-->>V: OcrParseResult(rows, warnings)
+    V-->>P: 展示可编辑表格 + 告警
+    U->>P: 人工修正 → 点「合并去重并导出」
+    P->>V: export()
+    V->>D: dedup(rows)
+    D-->>V: 去重后 rows
+    V->>E: exportExcel(rows)
+    E-->>V: 保存路径
+    V-->>P: 成功提示（含去重前后数量）
+
+---
+
+sequenceDiagram
+    participant U as 用户
+    participant P as CalculationPage
+    participant V as CalculationProvider
+    participant F as FitService
+    participant C as FitChart(widget)
+
+    U->>P: 勾选空白行 + 含菌行，输入标液浓度/单位
+    P->>V: setBlankRow / setSampleRow / setConcentration
+    U->>P: 点「计算」
+    P->>V: calculate()
+    V->>F: calcAbsorbance(blank, detection) × 2
+    alt 空白/检测为空或非数值
+        F-->>V: null
+        V-->>P: 提示跳过该行
+    else 正常
+        F-->>V: 两个吸光度值
+    end
+    V->>F: linearFit([(0,空白吸光度),(浓度,含菌吸光度), ...附加点])
+    F-->>V: FitResult(A/B/R² + points)
+    V-->>P: 更新结果卡片 + 拟合图数据
+    P->>C: 渲染 fl_chart 散点 + 拟合直线
+
+---
+
+sequenceDiagram
+    participant D as 桌面端(Windows)
+    participant Q as QR/发现
+    participant M as 手机端(Android)
+    participant S as FileTransferService
+    participant Ds as DiscoveryService
+
+    D->>S: startServer() → 本机 PeerDevice
+    D->>Q: 展示二维码 + UDP 广播
+    Ds->>M: 广播 hello(ip,port,token)
+    alt 扫码连接
+        M->>Q: mobile_scanner 扫码
+    else 设备列表连接
+        M->>Ds: 监听发现 → 选择桌面设备
+    end
+    M->>S: pairWith(desktopPeer)
+    M->>S: POST /pair（含手机自身 server 端点）
+    S-->>M: 双方配对完成（互知端点）
+    M->>S: sendFile(peer, excelPath, onProgress)
+    S->>S: POST /files 分块上传 + 进度回调
+    S-->>D: 桌面端 receivedFiles 流新增文件
+    Note over D,M: 配对后桌面端也可反向 sendFile 给手机

@@ -1,0 +1,209 @@
+%% 国标验证（总磷 HJ 103—2026）重做版 v2 · 关键时序图
+%% 对应文档：docs/ARCHITECTURE_tp_v2.md §4
+%% 说明：全应用 v1 时序图见 docs/sequence-diagram.mermaid（保留不动）
+
+sequenceDiagram
+  autonumber
+  actor U as 用户
+  participant Home as HomePage
+  participant Picker as WorkspacePickerSheet
+  participant Sheet as WorkspaceCreateSheet
+  participant Prov as WorkspaceProvider
+  participant Draft as WorkspaceDraftService
+  participant Store as WorkspaceStore
+  participant Det as WorkspaceDetailPage
+  participant Src as DatasetSourceSheet
+  participant Ocr as OcrImportPage
+  participant Img as ImageToExcelPage
+  participant ImgProv as ImageToExcelProvider(local)
+  participant Excel as ExcelService
+  participant Setup as CalcSetupPage
+  participant CP as CalcSessionProvider
+  participant Chk as GbDataChecker
+  participant Calc as GbTpCalculator
+  participant Dlg as UnsavedExitDialog
+  participant Proc as CalcProcessPage
+  participant Exp as GbExcelExporter
+  participant FP as FilePicker
+
+  rect rgb(227, 242, 253)
+  Note over U,Store: 阶段 1 · 入口与工作空间选择（含草稿）
+  U->>Home: 点击「国标验证」
+  Home->>Picker: WorkspacePickerSheet.show(context)
+  Picker->>Prov: refresh()
+  Prov->>Store: list()
+  Store-->>Prov: List[Workspace]
+  Prov-->>Picker: items
+  Picker-->>U: [新建草稿空间] [新建工作空间] [已有工作空间...]
+
+  alt 选「新建草稿空间」
+    U->>Picker: 点击
+    Picker->>Prov: createDraft()
+    Prov->>Draft: hasDraft()
+    alt 已有草稿
+      Draft-->>Prov: true
+      Prov-->>U: 确认「覆盖旧草稿 / 去打开旧的」
+    end
+    Prov->>Draft: save(workspace.asDraft())
+    Prov-->>Picker: Workspace(isDraft=true, savedAt=null)
+    Picker-->>Home: pop(draft)
+  else 选「新建工作空间」
+    U->>Picker: 点击
+    Picker->>Sheet: WorkspaceCreateSheet.show()
+    Note over Sheet: 合同编号选填（无 *）<br/>检测项目 = Dropdown[AnalysisItem]（COD/总氮/总磷/氨氮）
+    U->>Sheet: 填项目名称 + 选检测项目 → 点「创建」
+    Sheet->>Sheet: _submit()：只校验项目名称非空
+    Sheet-->>Picker: WorkspaceFields(contractNo 可 '', item='tp')
+    Picker->>Prov: create(projectName, contractNo, owner, itemId, remark, parameter=itemId)
+    Prov->>Store: create(ws)（文件夹名 = 中文拼接名）
+    Store-->>Prov: Workspace
+    Prov-->>Picker: Workspace
+    Picker-->>Home: pop(ws)
+  else 选已有工作空间
+    Picker-->>Home: pop(ws)
+  end
+  Home->>Det: Navigator.push(WorkspaceDetailPage(workspaceId))
+  end
+
+  rect rgb(232, 245, 233)
+  Note over U,Excel: 阶段 2 · 导入测量数据（4 种来源）
+  U->>Det: 点数据集卡片「导入测量数据」
+  Det->>Src: show(context, workspaceId)
+  Src-->>U: [其他工作空间的数据集] [其他工作空间的Excel附件] [本地Excel] [图片OCR]
+
+  alt 其他工作空间的数据集
+    U->>Src: 选 workspace + dataset
+    Src->>Store: get(targetWorkspaceId)
+    Store-->>Src: Workspace（含 datasets）
+    Src-->>Det: 复制 Dataset（含 columns / measurements，新 id）
+  else 其他工作空间的 Excel 附件
+    U->>Src: 选 workspace + file(kind='excel')
+    Src->>Store: workspacePath(id)
+    Store-->>Src: 文件夹路径
+    Src->>Excel: detectType(path) → importExcel(path, type)
+    Excel-->>Src: List[WaterQualityRow]
+    Src->>Det: rowsToDataset(rows, origin='workspace')
+  else 本地 Excel 文件
+    U->>Src: FilePicker.pickFiles(xlsx/xls)
+    Src->>Excel: detectType(path) → importExcel(path, type)
+    Excel-->>Src: List[WaterQualityRow]
+    Src->>Det: rowsToDataset(rows, origin='excel')
+  else 图片 OCR（复用「图片转 Excel」页）
+    U->>Ocr: Navigator.push(OcrImportPage)
+    Ocr->>ImgProv: ChangeNotifierProvider 局部覆盖（不污染全局实例）
+    Ocr->>Img: 显示 ImageToExcelPage(selectionMode: true)
+    Note over Img: 拍照 / 相册 / 四角裁剪 / OCR / 表头自动判型 /<br/>勾选行列与单元格 —— 全部复用现有 UI，零改动
+    U->>Img: 勾选完成后点「使用所选数据」
+    Img->>ImgProv: selectedRows()
+    ImgProv-->>Img: List[WaterQualityRow]
+    Img-->>Ocr: Navigator.pop(rows)
+    Ocr-->>Det: List[WaterQualityRow]
+    Det->>Det: rowsToDataset(rows, origin='ocr')
+  end
+
+  Det->>Store: save(workspace.copyWith(datasets: [...old, newDataset]))
+  Store-->>Det: ok（顺带 persistDraft 若为草稿）
+  end
+
+  rect rgb(255, 243, 224)
+  Note over U,Calc: 阶段 3 · 计算设置（选数据集 / 选行 / 分组 / 数据量校验）
+  U->>Det: 点「开始计算」
+  Det->>Setup: Navigator.push(CalcSetupPage(workspaceId))
+  Setup->>CP: init(workspace)
+  CP-->>Setup: 验证项列表（13 项，来自 gb_standard_v2）
+  U->>CP: selectItem('indication_error') / selectRange('basic')
+  U->>CP: toggleDataset(dsId, true)  × N
+  CP-->>Setup: 各数据集测量行（DatasetRowTable）
+  U->>CP: toggleRow(dsId, mId, true)  × N（可只选部分行）
+  CP->>CP: buildSamples() → List[GbSample]（过滤 valid=false，按 timestamp 排序）
+  CP->>Chk: autoGroupByTimeline(samples, specFor(item, range))
+  Chk->>Chk: 按 spec.groups 顺序切片（exact 条/组）+ 校验实测均值偏差 ≤3%
+  Chk-->>CP: AutoGroupResult{groups, warnings, confident}
+  CP-->>Setup: 分组预览 + 警告（每行可用下拉改分组）
+  U->>Setup: 点「校验数据量」
+  Setup->>CP: validate()
+  CP->>Chk: check(spec, samples)
+  Chk-->>CP: DataCheckResult{state, actualByGroup, messages}
+  alt state == insufficient
+    CP-->>U: 红条「数据不足：10%（0.400 mg/L）档需 6 条，当前 5 条」+ 禁用「开始计算」
+  else state == oversized
+    CP-->>U: 黄条「数据过多：80% 档多出 3 条，取最差值会偏严，请剔除」
+  else ok
+    CP-->>U: 绿条「数据量校验通过（24 条 / 4 档）」
+  end
+  end
+
+  rect rgb(243, 229, 245)
+  Note over U,Proc: 阶段 4 · 计算并生成逐步报告
+  U->>Setup: 点「开始计算」
+  Setup->>CP: compute()
+  CP->>Calc: indicationError(rangeKey, levels, limitOverride)
+  Calc->>Chk: check(spec, samples)
+  Chk-->>Calc: ok
+  Calc->>Calc: 逐档 mean → RE = (r̄−ρ)/ρ×100% → 取 |RE| 最大者
+  Calc->>Calc: 生成有序 CalcStep[]（公式 / 代入过程 / 原始值 / 展示值 / 说明）
+  Calc->>Calc: 生成 SubVerdict[]（每档一条）
+  Calc-->>CP: ItemReport{metricValue, limitValue, pass, steps, subVerdicts}
+  CP->>CP: 写入 workspace.reports
+  CP->>Store: save(workspace.copyWith(reports: [...old, report]))
+  Store-->>CP: ok
+  CP-->>Setup: ItemReport
+  Setup->>Proc: Navigator.push(CalcProcessPage(report))
+  Proc-->>U: 顶部：示值误差 · HJ 103—2026 5.5.1.1 · 基本检测范围 · 4 档
+  loop steps（index 升序）
+    Proc-->>U: 步骤卡片：标题 / 公式（等宽浅灰底）/ 代入过程 / 结果 + 单位 / 文字说明
+  end
+  Proc-->>U: 分项判定表（subVerdicts）+ 结论徽标（合格 / 不合格 / 无法判定）
+  end
+
+  rect rgb(255, 235, 238)
+  Note over U,FP: 阶段 5 · 保存导出 Excel（数据集 + 计算过程 + 结果 + 标准依据）
+  U->>Proc: 点「保存并导出 Excel」
+  Proc->>Exp: export(workspace, reports)
+  Exp->>Exp: Excel.createExcel()
+  Exp->>Exp: rename('Sheet1','数据集')；excel['计算过程'/'结果汇总'/'标准依据']（自动建表）
+  Exp->>Exp: 写表头（CellStyle bold + #E3F2FD 底 + 居中 + Thin 边框）
+  Exp->>Exp: 写数据（DoubleCellValue / IntCellValue / TextCellValue）
+  Exp->>Exp: sheet.merge(小标题行) + sheet.setColumnWidth(...)
+  Exp->>Exp: excel.encode() → List[int]
+  alt dir 已指定（归档到工作空间）
+    Exp->>Exp: File(dir/国标验证_总磷_时间戳.xlsx).writeAsBytes
+  else 交互式保存
+    Exp->>FP: saveFile(fileName, bytes, mimeType, dialogTitle)
+    FP-->>Exp: Uri（取消则 null → 回退文档目录）
+  end
+  Exp-->>Proc: 保存路径
+  Proc-->>U: SnackBar「已导出：<path>」
+  end
+
+  rect rgb(236, 239, 241)
+  Note over U,Draft: 阶段 6 · 退出拦截（仅草稿态）
+  U->>Det: 返回（AppBar / 硬件返回 / 侧滑）
+  Det->>Det: PopScope.canPop = !_unsaved（_unsaved = workspace.isDraft）
+  alt _unsaved == false（正式工作空间）
+    Det-->>U: 直接 pop
+  else _unsaved == true（草稿）
+    Det->>Dlg: UnsavedExitDialog.show(context)
+    Dlg-->>U: 「当前工作空间还没保存，是否要保存」[取消] [不保存] [保存]
+    alt 取消
+      Dlg-->>Det: null
+      Note over Det: 留在页面，不 pop
+    else 不保存
+      Det->>Draft: clear()
+      Det-->>U: pop（丢弃本次录入）
+    else 保存
+      Det->>Sheet: WorkspaceCreateSheet.show()
+      alt 用户取消填表
+        Sheet-->>Det: null
+        Note over Det: 留在页面
+      else 提交
+        Sheet-->>Det: WorkspaceFields（合同编号可空）
+        Det->>Prov: promoteDraft(draft, fields)
+        Prov->>Store: create(draft.asSaved(now).copyWith(...))
+        Prov->>Draft: clear()
+        Prov->>Prov: refresh()
+        Det-->>U: pop + SnackBar「已保存到『XXX』」
+      end
+    end
+  end
+  end

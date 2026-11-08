@@ -1,0 +1,9 @@
+# Windows 本地 OCR 引擎默认后端（一键打包产物）
+# RapidOCR 使用 PaddleOCR 官方 PP-OCR 模型 + ONNX Runtime，
+# 模型随包内置、完全离线，无需用户安装 Python / 联网下载模型。
+rapidocr_onnxruntime
+pyinstaller>=6.0
+
+# 可选：原生 PaddleOCR 后端（需 Python 3.10~3.12，见 build_engine_paddle.bat）
+# paddlepaddle>=3.0.0
+# paddleocr>=3.0.0
