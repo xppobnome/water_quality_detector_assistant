@@ -473,7 +473,7 @@ class CalcSession {
     final List<String> reasons = <String>[
       if (naCount > 0) '有 $naCount 项无法判定（数据不足或缺少必要参数）',
       if (missingItemCount > 0)
-        '标准要求的 $applicableItemCount 项中尚有 $missingItemCount 项未计算'
+        '本量程适用的 $applicableItemCount 项中尚有 $missingItemCount 项未计算'
             '（本次仅计算 ${reports.length} 项）',
     ];
     if (reasons.isNotEmpty) {

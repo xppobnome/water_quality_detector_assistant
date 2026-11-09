@@ -238,7 +238,8 @@ class GbExcelExporter {
       final ItemReport report = session.reports[i];
       final StringBuffer head = StringBuffer(
         '${i + 1}. ${report.itemName}（${report.clause}）　'
-        '结论：${conclusionLabel(report.conclusion)}',
+        '结论：${conclusionLabel(report.conclusion)}'
+        '${GbCalculator.tierCoverageSuffix(report)}',
       );
       if (report.subLabel.isNotEmpty) {
         head.write('　[${report.subLabel}]');
@@ -327,7 +328,8 @@ class GbExcelExporter {
         _metricCell(report),
         _rawMetric(report),
         report.limitDisplay.isEmpty ? '—' : report.limitDisplay,
-        conclusionLabel(report.conclusion),
+        '${conclusionLabel(report.conclusion)}'
+            '${GbCalculator.tierCoverageSuffix(report)}',
         _failedTiersCell(report),
         _summaryRemark(report),
       ]);

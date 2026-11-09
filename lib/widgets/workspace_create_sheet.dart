@@ -197,7 +197,7 @@ class _WorkspaceCreateSheetState extends State<WorkspaceCreateSheet> {
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: kPrimaryLight,
+                color: appSoftSurface(context),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
@@ -278,9 +278,9 @@ class _WorkspaceCreateSheetState extends State<WorkspaceCreateSheet> {
     width: double.infinity,
     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
     decoration: BoxDecoration(
-      color: const Color(0xFFF5F5F5),
+      color: appNeutralSurface(context),
       borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: const Color(0xFFE0E0E0)),
+      border: Border.all(color: appHairline(context)),
     ),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -291,7 +291,7 @@ class _WorkspaceCreateSheetState extends State<WorkspaceCreateSheet> {
           child: Text(
             '当前仅内置总磷（HJ 103—2026）标准条款，'
             '$_itemLabel 可先做数据采集与归档，暂不出具合格判定。',
-            style: const TextStyle(fontSize: 12, color: Color(0xFF616161)),
+            style: const TextStyle(fontSize: 12, color: kNeutralGrey),
           ),
         ),
       ],

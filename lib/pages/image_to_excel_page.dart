@@ -158,7 +158,7 @@ class _ImageToExcelPageState extends State<ImageToExcelPage> {
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: kPrimaryLight,
+                color: appSoftSurface(context),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Row(
@@ -219,7 +219,7 @@ class _ImageToExcelPageState extends State<ImageToExcelPage> {
                               errorBuilder: (_, __, ___) => Container(
                                 width: 72,
                                 height: 72,
-                                color: kPrimaryLight,
+                                color: appSoftSurface(context),
                                 child: const Icon(
                                   Icons.image,
                                   color: kPrimaryColor,
@@ -400,7 +400,7 @@ class _ImageToExcelPageState extends State<ImageToExcelPage> {
                     vertical: 10,
                   ),
                   decoration: BoxDecoration(
-                    color: kPrimaryLight,
+                    color: appSoftSurface(context),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Row(

@@ -20,6 +20,7 @@ import '../../widgets/status_badge.dart';
 import '../image_to_excel_page.dart';
 import 'calc_result_page.dart';
 import 'calc_setup_page.dart';
+import 'limit_override_page.dart';
 
 /// 工作空间详情页（国标验证总入口）。
 ///
@@ -233,6 +234,29 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
     await _apply(ws.copyWith(parameter: id));
     if (!mounted) return;
     _toast('检测项目已切换为「${gbItemLabelOfId(id)}」');
+  }
+
+  /// 打开「自定义判定限」编辑页。
+  ///
+  /// 计算引擎在 `GbCalculator.compute` 已支持 `limitOverride`，但此前没有写入侧，
+  /// `Workspace.overrideLimits` 一直是空映射。这里把编辑结果落盘到工作空间，
+  /// 之后进入 [CalcSetupPage] 时会随 `ws` 一起传入并用于判定。
+  Future<void> _openLimitOverrides() async {
+    final Workspace? ws = _ws;
+    if (ws == null) return;
+    final Map<String, Map<String, StandardItemLimit>>? result =
+        await Navigator.of(context)
+            .push<Map<String, Map<String, StandardItemLimit>>>(
+              MaterialPageRoute<Map<String, Map<String, StandardItemLimit>>>(
+                builder: (_) => LimitOverridePage(workspace: ws),
+              ),
+            );
+    if (result == null || !mounted) return; // 用户取消
+    // 编辑期间可能有其它改动，用最新状态做基底，避免覆盖掉并发修改。
+    final Workspace latest = _ws ?? ws;
+    await _apply(latest.copyWith(overrideLimits: result));
+    if (!mounted) return;
+    _toast('判定限已保存，重新点击「开始计算」后生效');
   }
 
   // ---------------------------------------------------------------- 数据集
@@ -873,6 +897,12 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
         appBar: AppBar(
           title: Text(_title(ws)),
           actions: <Widget>[
+            if (implemented)
+              IconButton(
+                tooltip: '自定义判定限',
+                icon: const Icon(Icons.tune_rounded),
+                onPressed: _saving ? null : _openLimitOverrides,
+              ),
             if (ws.isUnsaved || _dirty)
               IconButton(
                 tooltip: _saving ? '保存中…' : '保存',
@@ -1209,7 +1239,7 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
         ],
         child: Chip(
           visualDensity: VisualDensity.compact,
-          backgroundColor: kPrimaryLight,
+          backgroundColor: appSoftSurface(context),
           avatar: const Icon(
             Icons.science_outlined,
             size: 14,
@@ -1475,7 +1505,7 @@ class _DatasetCard extends StatelessWidget {
                 Chip(
                   visualDensity: VisualDensity.compact,
                   label: Text('$count 行', style: const TextStyle(fontSize: 11)),
-                  backgroundColor: kPrimaryLight,
+                  backgroundColor: appSoftSurface(context),
                   labelStyle: const TextStyle(color: kPrimaryColor),
                 ),
                 IconButton(

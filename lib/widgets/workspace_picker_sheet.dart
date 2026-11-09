@@ -111,7 +111,7 @@ class WorkspacePickerSheet extends StatelessWidget {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
-                tileColor: kPrimaryLight,
+                tileColor: appSoftSurface(context),
                 leading: const Icon(
                   Icons.create_new_folder_outlined,
                   color: kPrimaryColor,

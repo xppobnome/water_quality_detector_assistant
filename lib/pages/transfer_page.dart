@@ -29,7 +29,7 @@ class TransferPage extends StatelessWidget {
             width: double.infinity,
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: kPrimaryLight,
+              color: appSoftSurface(context),
               borderRadius: BorderRadius.circular(10),
             ),
             child: const Row(

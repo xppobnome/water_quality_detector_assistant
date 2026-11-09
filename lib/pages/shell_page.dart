@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 
+import '../core/design_system.dart';
 import '../widgets/responsive_navigation.dart';
 import 'home_page.dart';
+import 'settings_page.dart';
 import 'transfer_page.dart';
 import 'workspace_list_page.dart';
 
-/// 导航壳：左「工作空间」/ 中「工具」（默认）/ 右「数据传输」。
+/// 导航壳：工作空间 / 工具（默认）/ 数据传输 / 设置。
 ///
-/// 桌面端为左侧 NavigationRail，移动端为底部 NavigationBar（由
-/// [ResponsiveScaffold] 自动按宽度切换），保证 Android + Windows 一致体验。
-/// 切换 tab 时用淡入 + 轻微上移过渡包住 [IndexedStack]，页面状态不丢。
+/// 电脑端为 244px 未来感侧边栏，手机端为浮动胶囊底栏（由
+/// [ResponsiveScaffold] 按 900px 断点自动切换）。设置页纳入 tab，
+/// 两端都能一步直达外观切换，无需再从隐藏的齿轮入口进入。
+///
+/// 切 tab 时用淡入 + 轻微上移过渡包住 [IndexedStack]：
+/// 三个工具页与设置页的 Element 不会重建，滚动位置 / 输入内容 / Provider 数据不丢。
 class ShellPage extends StatefulWidget {
   const ShellPage({super.key});
 
@@ -19,14 +24,12 @@ class ShellPage extends StatefulWidget {
 
 class _ShellPageState extends State<ShellPage>
     with SingleTickerProviderStateMixin {
-  /// 默认停留在中间的「工具」页。
+  /// 默认停留在「工具」页。
   int _index = 1;
 
-  /// 切 tab 过渡：260ms 淡入 + 轻微上移，easeOutCubic。
-  /// 只驱动外层过渡 widget，[IndexedStack] 及其三个页面的 Element 不会被替换。
   late final AnimationController _transitionController = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 260),
+    duration: AppMotion.normal,
   );
 
   late final Animation<double> _fade = CurvedAnimation(
@@ -47,24 +50,28 @@ class _ShellPageState extends State<ShellPage>
         ResponsiveDestination(
           label: '工作空间',
           icon: Icons.folder_outlined,
-          selectedIcon: Icons.folder,
+          selectedIcon: Icons.folder_rounded,
         ),
         ResponsiveDestination(
           label: '工具',
           icon: Icons.grid_view_outlined,
-          selectedIcon: Icons.grid_view,
+          selectedIcon: Icons.grid_view_rounded,
         ),
         ResponsiveDestination(
           label: '数据传输',
           icon: Icons.wifi_outlined,
-          selectedIcon: Icons.wifi,
+          selectedIcon: Icons.wifi_rounded,
+        ),
+        ResponsiveDestination(
+          label: '设置',
+          icon: Icons.settings_outlined,
+          selectedIcon: Icons.settings_rounded,
         ),
       ];
 
   @override
   void initState() {
     super.initState();
-    // 首次进入也淡入，避免生硬出现。
     _transitionController.forward(from: 0);
   }
 
@@ -75,6 +82,7 @@ class _ShellPageState extends State<ShellPage>
   }
 
   void _select(int index) {
+    if (index == _index) return;
     setState(() => _index = index);
     _transitionController.forward(from: 0);
   }
@@ -85,6 +93,7 @@ class _ShellPageState extends State<ShellPage>
       const WorkspacesPage(),
       const HomePage(),
       const TransferPage(),
+      const SettingsPage(),
     ];
 
     return ResponsiveScaffold(
@@ -95,8 +104,6 @@ class _ShellPageState extends State<ShellPage>
         opacity: _fade,
         child: SlideTransition(
           position: _slide,
-          // IndexedStack 必须保留：三个页面的滚动位置、provider 数据、
-          // 输入框内容在切 tab 后都不会因页面重建而丢失。
           child: IndexedStack(index: _index, children: pages),
         ),
       ),

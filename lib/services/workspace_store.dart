@@ -2,23 +2,32 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../core/constants.dart';
 import '../models/trash_entry.dart';
 import '../models/workspace.dart';
+import 'workspace_storage_settings.dart';
 
 /// 工作空间搜索字段。
 enum SearchField { all, contractNo, projectName }
 
 /// 工作空间持久化（增量 v2）：每个工作空间 = 一个真实文件夹。
 ///
-/// 目录结构：
+/// 目录结构（`<base>` 默认是系统应用文档目录，可由用户在设置页更改）：
 /// ```
-/// documents/
+/// <base>/
 /// ├── workspaces/<拼接名>/meta.json + 附件
+/// ├── workspaces/<yyyy-MM>/<拼接名>/ …（开启「按年月分组」后的新工作空间）
 /// └── trash/trash_index.json + trash/<id>/（移入的原文件夹）
 /// ```
+///
+/// 说明：
+/// - 回收站与工作空间共用同一个 `<base>`，保证 `rename` 同盘（秒级移动）；
+/// - 若用户在跨盘位置之间切换过，移动逻辑自动退化为「复制 + 删除」
+///   （见 [_moveDir]）；
+/// - 读取时同时兼容「平铺」与「年月分组」两种布局，用户中途关闭开关后
+///   老数据仍然可见（见 [_scanWorkspaceDirsSync]）。
+///
 /// 兼容旧版 `workspaces/<id>.json`（[migrateLegacyIfNeeded] 幂等迁移）。
 /// 同时保留旧 API [list]/[get]/[save]/[delete] 供国标验证页复用。
 class WorkspaceStore {
@@ -28,20 +37,61 @@ class WorkspaceStore {
   Directory? _trashDir;
   bool _migrated = false;
 
+  /// 当前缓存对应的配置版本号（[WorkspaceStorageSettings.epoch]）。
+  int _cacheEpoch = -1;
+
+  /// 当前 `_workspacesDir` 缓存所属的年月键；跨月运行必须重建目录。
+  String _dirMonthKey = '';
+
+  /// 配置变更（换根目录 / 开关分组）后失效所有缓存句柄。
+  void _syncEpoch() {
+    if (_cacheEpoch == WorkspaceStorageSettings.epoch) return;
+    _cacheEpoch = WorkspaceStorageSettings.epoch;
+    _workspacesDir = null;
+    _trashDir = null;
+    _migrated = false;
+    _dirMonthKey = '';
+  }
+
+  /// 当前写入目标目录：`<base>/workspaces` 或 `<base>/workspaces/<yyyy-MM>`。
   Future<Directory> get _dir async {
-    if (_workspacesDir != null && await _workspacesDir!.exists()) {
-      return _workspacesDir!;
+    _syncEpoch();
+    final DateTime now = DateTime.now();
+    final String monthKey = WorkspaceStorageSettings.monthKey(now);
+    final Directory? cached = _workspacesDir;
+    // 缓存只在「同月 + 同上一次配置版本」内有效，否则跨月会写进上个月的目录。
+    if (cached != null && _dirMonthKey == monthKey && await cached.exists()) {
+      return cached;
     }
-    final Directory base = await getApplicationDocumentsDirectory();
-    final Directory dir = Directory(p.join(base.path, 'workspaces'));
+    final Directory base = await WorkspaceStorageSettings.baseDirectory();
+    final Directory dir = Directory(
+      p.joinAll(<String>[
+        base.path,
+        ...WorkspaceStorageSettings.layoutSegments(
+          monthly: WorkspaceStorageSettings.monthlyFolder,
+          at: now,
+        ),
+      ]),
+    );
     if (!await dir.exists()) await dir.create(recursive: true);
     _workspacesDir = dir;
+    _dirMonthKey = monthKey;
     return dir;
   }
 
+  /// 工作空间根目录（`<base>/workspaces`，**不含**年月层，不缓存、不创建）。
+  ///
+  /// 读取侧统一从这里递归一层扫描，因此两种布局都能被读到。
+  Future<Directory> get _rootDir async {
+    _syncEpoch();
+    final Directory base = await WorkspaceStorageSettings.baseDirectory();
+    return Directory(p.join(base.path, 'workspaces'));
+  }
+
   Future<Directory> get _trash async {
+    _syncEpoch();
     if (_trashDir != null && await _trashDir!.exists()) return _trashDir!;
-    final Directory base = await getApplicationDocumentsDirectory();
+    final Directory base = await WorkspaceStorageSettings.baseDirectory();
     final Directory dir = Directory(p.join(base.path, 'trash'));
     if (!await dir.exists()) await dir.create(recursive: true);
     _trashDir = dir;
@@ -53,22 +103,47 @@ class WorkspaceStore {
     return File(p.join(dir.path, 'trash_index.json'));
   }
 
+  /// 扫描 [root] 下所有工作空间文件夹（兼容平铺 + 年月分组两种布局）。
+  ///
+  /// 判定规则：目录直接含 `meta.json` → 它是工作空间；否则再看一层子目录。
+  /// 这样「已存在的平铺目录」和「新建的年月目录」能被同时读到。
+  List<Directory> _scanWorkspaceDirsSync(Directory root) {
+    final List<Directory> out = <Directory>[];
+    if (!root.existsSync()) return out;
+    for (final Directory d in root.listSync().whereType<Directory>()) {
+      if (File(p.join(d.path, kWorkspaceMetaName)).existsSync()) {
+        out.add(d);
+        continue;
+      }
+      for (final Directory c in d.listSync().whereType<Directory>()) {
+        if (File(p.join(c.path, kWorkspaceMetaName)).existsSync()) out.add(c);
+      }
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- 迁移
 
   /// 旧 `<id>.json` → 文件夹 + meta.json，幂等；迁移成功后删除旧文件。
+  ///
+  /// 旧文件始终位于 `workspaces/` **顶层**，因此扫描用 [_rootDir]（不含年月层）；
+  /// 迁出的新目录仍写入 [_dir]（开启分组时自动进当月）。
   Future<void> migrateLegacyIfNeeded() async {
     if (_migrated) return;
-    final Directory dir = await _dir;
-    final List<File> legacy = dir
-        .listSync()
-        .whereType<File>()
-        .where((File f) => f.path.endsWith('.json'))
-        .toList();
+    final Directory root = await _rootDir;
+    final List<File> legacy = root.existsSync()
+        ? root
+              .listSync()
+              .whereType<File>()
+              .where((File f) => f.path.endsWith('.json'))
+              .toList()
+        : <File>[];
     for (final File f in legacy) {
       try {
         final Map<String, dynamic> json =
             jsonDecode(await f.readAsString()) as Map<String, dynamic>;
         final Workspace ws = Workspace.fromJson(json);
+        final Directory dir = await _dir;
         final Directory target = await _uniqueDir(dir, _safeFolder(ws), ws.id);
         await _writeMeta(target, ws);
         await f.delete();
@@ -90,10 +165,10 @@ class WorkspaceStore {
   }) async {
     await migrateLegacyIfNeeded();
     await purgeExpiredTrash();
-    final Directory dir = await _dir;
+    final Directory root = await _rootDir;
     final List<Workspace> result = <Workspace>[];
-    for (final FileSystemEntity e in dir.listSync().whereType<Directory>()) {
-      final Workspace? ws = await _readMeta(e as Directory);
+    for (final Directory d in _scanWorkspaceDirsSync(root)) {
+      final Workspace? ws = await _readMeta(d);
       if (ws != null) result.add(ws);
     }
     if (includeTrashed) {
@@ -139,9 +214,9 @@ class WorkspaceStore {
   /// 按 id 取工作空间；不存在返回 null。
   Future<Workspace?> get(String id) async {
     await migrateLegacyIfNeeded();
-    final Directory dir = await _dir;
-    for (final FileSystemEntity e in dir.listSync().whereType<Directory>()) {
-      final Workspace? ws = await _readMeta(e as Directory);
+    final Directory root = await _rootDir;
+    for (final Directory d in _scanWorkspaceDirsSync(root)) {
+      final Workspace? ws = await _readMeta(d);
       if (ws != null && ws.id == id) return ws;
     }
     return null;
@@ -149,17 +224,26 @@ class WorkspaceStore {
 
   /// 按 id 找其物理文件夹；不存在返回 null。
   Future<Directory?> _dirOf(String id) async {
-    final Directory dir = await _dir;
-    for (final Directory e in dir.listSync().whereType<Directory>()) {
-      final Workspace? ws = await _readMeta(e);
-      if (ws != null && ws.id == id) return e;
+    final Directory root = await _rootDir;
+    for (final Directory d in _scanWorkspaceDirsSync(root)) {
+      final Workspace? ws = await _readMeta(d);
+      if (ws != null && ws.id == id) return d;
     }
     return null;
+  }
+
+  /// 现有工作空间数量（不含回收站），供设置页展示。
+  Future<int> countWorkspaces() async {
+    final Directory root = await _rootDir;
+    return _scanWorkspaceDirsSync(root).length;
   }
 
   // ---------------------------------------------------------------- 写入
 
   /// 新建工作空间：建文件夹（sanitize + 防冲突）+ meta.json，返回落盘后的对象。
+  ///
+  /// 父目录取 [_dir]：开启「按年月分组」时会自动落在 `<base>/workspaces/<yyyy-MM>`
+  /// 下，关闭时落在 `<base>/workspaces` 下。
   Future<Workspace> create(Workspace ws) async {
     await migrateLegacyIfNeeded();
     final Directory dir = await _dir;
@@ -169,6 +253,9 @@ class WorkspaceStore {
   }
 
   /// 更新 meta.json；若拼接名变化则同步重命名物理文件夹（冲突追加 id 前 6 位，失败回滚）。
+  ///
+  /// **重命名严格限制在 `current.parent` 内**（即同一年月分组目录里）：不跨月 /
+  /// 跨组搬动目录，避免用户改个名字就把数据挪到别的分组，也避免跨盘复制风险。
   Future<void> update(Workspace ws) async {
     await migrateLegacyIfNeeded();
     final Directory? current = await _dirOf(ws.id);
@@ -221,7 +308,8 @@ class WorkspaceStore {
     final Directory trash = await _trash;
     final Directory dest = Directory(p.join(trash.path, id));
     if (await dest.exists()) await dest.delete(recursive: true);
-    await current.rename(dest.path);
+    // 用 [_moveDir] 而非直接 rename：用户换过根目录后可能跨盘，rename 会失败。
+    await _moveDir(current, dest.path);
 
     final List<TrashEntry> entries = await listTrash();
     entries.removeWhere((TrashEntry e) => e.id == id);
@@ -249,6 +337,8 @@ class WorkspaceStore {
   }
 
   /// 从回收站恢复工作空间文件夹。
+  ///
+  /// 恢复到 [_dir]（当天所在分组）；若同名目录已被占用则追加 id 前 6 位。
   Future<void> restore(String id) async {
     final Directory trash = await _trash;
     final Directory source = Directory(p.join(trash.path, id));
@@ -267,7 +357,7 @@ class WorkspaceStore {
       targetName =
           '${targetName}_${id.substring(0, id.length >= 6 ? 6 : id.length)}';
     }
-    await source.rename(p.join(dir.path, targetName));
+    await _moveDir(source, p.join(dir.path, targetName));
     entries.removeWhere((TrashEntry e) => e.id == id);
     await _writeTrashIndex(entries);
   }
@@ -306,6 +396,63 @@ class WorkspaceStore {
       }
     }
     if (changed) await _writeTrashIndex(kept);
+  }
+
+  // ---------------------------------------------------------------- 存储迁移
+
+  /// 把**当前 base** 下所有工作空间（含回收站）搬到 [newBasePath]。
+  ///
+  /// 目标布局：`<newBasePath>/workspaces[/<该工作空间 createdAt 的年月>]/<原文件夹名>`，
+  /// 年月层是否出现取决于调用时刻的 [WorkspaceStorageSettings.monthlyFolder]；
+  /// 同名冲突复用 [_uniqueName] 的「追加 id 前 6 位」策略。
+  ///
+  /// **必须在 `setRootPathOverride(newBasePath)` 之前调用**：本方法内部用旧 base
+  /// 扫描（`_syncEpoch` 尚未失效缓存），切换后再调会扫到空目录。返回移动条数。
+  Future<int> migrateAllTo(String newBasePath) async {
+    final String base = newBasePath.trim();
+    if (base.isEmpty) return 0;
+    final Directory oldRoot = await _rootDir;
+    final List<Directory> sources = _scanWorkspaceDirsSync(oldRoot);
+    int moved = 0;
+    for (final Directory src in sources) {
+      final String folderName = p.basename(src.path);
+      final Workspace? ws = await _readMeta(src);
+      final DateTime at = ws?.createdAt ?? DateTime.now();
+      final List<String> segments = WorkspaceStorageSettings.layoutSegments(
+        monthly: WorkspaceStorageSettings.monthlyFolder,
+        at: at,
+      );
+      final Directory parent = Directory(
+        p.joinAll(<String>[base, ...segments]),
+      );
+      // 用户可能选了「同一个根目录」：已在目标分组的目录原地保留，不重复搬运。
+      if (p.equals(src.parent.path, parent.path)) continue;
+      if (!await parent.exists()) await parent.create(recursive: true);
+      final String name = await _uniqueName(
+        parent,
+        folderName,
+        ws?.id ?? folderName,
+      );
+      try {
+        await _moveDir(src, p.join(parent.path, name));
+        moved++;
+      } catch (_) {
+        // 单个目录搬迁失败不影响其余工作空间（宁可部分迁移，也不留半途崩溃）。
+      }
+    }
+    // 回收站整体搬迁：索引与目录必须同时可用，否则「删除」会立刻失败。
+    final Directory oldTrash = await _trash;
+    final Directory newTrash = Directory(p.join(base, 'trash'));
+    if (await oldTrash.exists() &&
+        !p.equals(oldTrash.path, newTrash.path) &&
+        !await newTrash.exists()) {
+      try {
+        await _moveDir(oldTrash, newTrash.path);
+      } catch (_) {
+        // 回收站搬迁失败不阻断主流程：下次删除时会在新位置重建空回收站。
+      }
+    }
+    return moved;
   }
 
   // ---------------------------------------------------------------- 附件
@@ -399,25 +546,63 @@ class WorkspaceStore {
     return s.isEmpty ? 'workspace_${ws.id.substring(0, 6)}' : s;
   }
 
-  Future<Directory> _uniqueDir(
+  /// 冲突安全的目录名词：`name` → `name_<id前6位>` → `name_<id前6位>_<毫秒>`。
+  Future<String> _uniqueName(
     Directory parent,
     String desired,
     String id,
   ) async {
     final String short = id.length >= 6 ? id.substring(0, 6) : id;
     String name = desired;
-    Directory candidate = Directory(p.join(parent.path, name));
-    if (await candidate.exists()) {
+    if (await Directory(p.join(parent.path, name)).exists()) {
       name = '${desired}_$short';
-      candidate = Directory(p.join(parent.path, name));
       // 极端情况下仍冲突，用毫秒时间戳兜底。
-      if (await candidate.exists()) {
+      if (await Directory(p.join(parent.path, name)).exists()) {
         name = '${desired}_${short}_${DateTime.now().millisecondsSinceEpoch}';
-        candidate = Directory(p.join(parent.path, name));
       }
     }
+    return name;
+  }
+
+  Future<Directory> _uniqueDir(
+    Directory parent,
+    String desired,
+    String id,
+  ) async {
+    final String name = await _uniqueName(parent, desired, id);
+    final Directory candidate = Directory(p.join(parent.path, name));
     await candidate.create(recursive: true);
     return candidate;
+  }
+
+  /// 移动目录；跨盘（或跨卷）时 `rename` 会抛 `FileSystemException`，
+  /// 此时退化为「递归复制 + 删除源目录」，保证用户切换存储位置后仍能工作。
+  ///
+  /// [destPath] 不应已存在（调用方负责先清空或选唯一名）。
+  Future<void> _moveDir(Directory src, String destPath) async {
+    if (!await src.exists()) return;
+    try {
+      await src.rename(destPath);
+      return;
+    } on FileSystemException {
+      // 回退到复制方案。
+    }
+    final Directory dest = Directory(destPath);
+    if (!await dest.exists()) await dest.create(recursive: true);
+    await for (final FileSystemEntity entity in src.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      final String rel = p.relative(entity.path, from: src.path);
+      final String target = p.join(dest.path, rel);
+      if (entity is Directory) {
+        await Directory(target).create(recursive: true);
+      } else if (entity is File) {
+        await File(target).parent.create(recursive: true);
+        await entity.copy(target);
+      }
+    }
+    await src.delete(recursive: true);
   }
 
   Future<void> _writeMeta(Directory folder, Workspace ws) async {

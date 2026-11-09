@@ -248,7 +248,7 @@ class _CalculationPageState extends State<CalculationPage> {
                               errorBuilder: (_, __, ___) => Container(
                                 width: 64,
                                 height: 64,
-                                color: kPrimaryLight,
+                                color: appSoftSurface(context),
                                 child: const Icon(
                                   Icons.image,
                                   color: kPrimaryColor,

@@ -12,6 +12,32 @@ const Color kWarningColor = Color(0xFFEF6C00);
 const Color kErrorColor = Color(0xFFC62828);
 const Color kNeutralGrey = Color(0xFF9E9E9E);
 
+/// ── 主题语义兼容层 ──────────────────────────────────────────────────────
+///
+/// 早期页面里存在一批大面积硬编码浅色背景。深色模式下若原样渲染会变成
+/// 刺眼白块，因此这些位置统一改走下列按亮度解析的函数：
+/// - [appSoftSurface]：淡蓝强调块。深色模式取亮蓝 HUD 色，保证其上
+///   `kPrimaryColor` 深蓝文字仍有 >= 4.5:1 对比度（WCAG AA）。
+/// - [appNeutralSurface]：中性信息块，深色模式取深蓝表面。
+/// - [appHairline]：分隔线 / 描边。
+///
+/// 新写的代码请直接使用 `context.cs`（ColorScheme）与 `context.ds`
+/// （AppThemeExtension），不要再引用这些兼容函数。
+Color appSoftSurface(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFFC2DFFF)
+    : kPrimaryLight;
+
+Color appNeutralSurface(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xFF152438)
+    : const Color(0xFFF5F5F5);
+
+Color appHairline(BuildContext context) =>
+    Theme.of(context).colorScheme.outlineVariant;
+
+/// ── 业务常量 ────────────────────────────────────────────────────────────
+
 /// 标液浓度默认值（MPN/L）。
 const double kDefaultConcentration = 9000.0;
 const String kDefaultUnit = 'MPN/L';

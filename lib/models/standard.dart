@@ -95,6 +95,23 @@ class VerificationItem {
   /// 该量程下是否参与验证（无限值即该量程不适用，如扩展量程无定量下限）。
   bool appliesTo(String rangeKey) => limitsByRange.containsKey(rangeKey);
 
+  /// 复制并替换限值表（供自定义判定限生效时使用）。
+  ///
+  /// 仅替换 [limitsByRange]，其余字段原样保留，保证「覆盖限值」不会
+  /// 顺手改掉名称、条款、序列要求等可审计信息。
+  VerificationItem copyWith({Map<String, StandardItemLimit>? limitsByRange}) =>
+      VerificationItem(
+        id: id,
+        name: name,
+        formulaDesc: formulaDesc,
+        requiredSeries: requiredSeries,
+        limitsByRange: limitsByRange ?? this.limitsByRange,
+        impactHint: impactHint,
+        clause: clause,
+        methodNote: methodNote,
+        group: group,
+      );
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'id': id,
     'name': name,

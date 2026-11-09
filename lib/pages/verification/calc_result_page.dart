@@ -342,7 +342,9 @@ class _CalcResultPageState extends State<CalcResultPage> {
                             style: const TextStyle(fontSize: 12),
                           ),
                         ),
-                        DataCell(_conclusionChip(report.conclusion)),
+                        DataCell(
+                          _conclusionChip(report.conclusion, report: report),
+                        ),
                       ],
                     ),
                 ],
@@ -437,7 +439,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
                   height: 24,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: kPrimaryLight,
+                    color: appSoftSurface(context),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
@@ -473,7 +475,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                _conclusionChip(report.conclusion),
+                _conclusionChip(report.conclusion, report: report),
               ],
             ),
             if (report.subLabel.isNotEmpty) ...<Widget>[
@@ -1044,7 +1046,8 @@ class _CalcResultPageState extends State<CalcResultPage> {
       final ItemReport report = _session.reports[i];
       buffer.writeln(
         '${i + 1}. ${report.itemName}（${report.clause}）'
-        '　结论：${conclusionLabel(report.conclusion)}',
+        '　结论：${conclusionLabel(report.conclusion)}'
+        '${GbCalculator.tierCoverageSuffix(report)}',
       );
       if (report.subLabel.isNotEmpty) {
         buffer.writeln('   ${report.subLabel}');
@@ -1119,7 +1122,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
     }
   }
 
-  Widget _conclusionChip(GbConclusion conclusion) {
+  Widget _conclusionChip(GbConclusion conclusion, {ItemReport? report}) {
     final Color color = _conclusionColor(conclusion);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
@@ -1129,7 +1132,8 @@ class _CalcResultPageState extends State<CalcResultPage> {
         border: Border.all(color: color.withValues(alpha: 0.45)),
       ),
       child: Text(
-        conclusionLabel(conclusion),
+        '${conclusionLabel(conclusion)}'
+        '${report == null ? '' : GbCalculator.tierCoverageSuffix(report)}',
         style: TextStyle(
           fontSize: 11.5,
           fontWeight: FontWeight.w600,

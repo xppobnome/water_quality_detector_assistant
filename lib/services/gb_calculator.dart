@@ -775,6 +775,25 @@ class GbCalculator {
     return <int>[enabled, total];
   }
 
+  /// 该验证项在本量程下「标准规定应测的档位数」（不含 discard 前置段）。
+  static int requiredTierCount(String itemId, String rangeKey) => segmentSpecs(
+    itemId,
+    rangeKey,
+  ).where((GbSegmentSpec s) => !s.discard).length;
+
+  /// 结论的档位覆盖后缀（第 9 轮 QA 顺延项 P2-3）。
+  ///
+  /// 口径：只测部分档位、已测档位全合格即可判合格；为避免读者误以为已覆盖
+  /// 全部标准档位，在结论旁显式标注 `（n/m 档）`。不合格项已由逐档红色提示
+  /// 指明具体档位，无需再加后缀；单档项目也不加，避免「（1/1 档）」噪音。
+  static String tierCoverageSuffix(ItemReport report) {
+    if (report.conclusion != GbConclusion.pass) return '';
+    if (report.tiers.isEmpty) return '';
+    final int required = requiredTierCount(report.itemId, report.rangeKey);
+    if (required <= 0 || report.tiers.length >= required) return '';
+    return '（${report.tiers.length}/$required 档）';
+  }
+
   /// 选中总条数是否足以开始计算（至少要有 2 条才能得到统计量）。
   static bool enoughToCompute(List<GbSample> samples) => samples.length >= 2;
 
@@ -794,7 +813,9 @@ class GbCalculator {
   /// - [segments]：分段数据（顺序须与 [segmentSpecs] 一致）；
   /// - [labMean]：实际样品比对所需的实验室测定均值（mg/L）；
   /// - [maintenanceHours]：最小维护周期所需的两次维护间隔（h）；
-  /// - [validCount]/[totalCount]：数据有效率的有效数与总数。
+  /// - [validCount]/[totalCount]：数据有效率的有效数与总数；
+  /// - [limitOverride]：工作空间里用户自定义的判定限（仅本量程），
+  ///   非空时替换 [item] 在该量程下的标准默认限值，其余字段不变。
   static ItemReport compute({
     required VerificationItem item,
     required String rangeKey,
@@ -803,9 +824,19 @@ class GbCalculator {
     double? maintenanceHours,
     int? validCount,
     int? totalCount,
+    StandardItemLimit? limitOverride,
   }) {
+    // 自定义判定限：仅替换本量程的限值，其余字段不变（可审计）。
+    final VerificationItem effective = limitOverride == null
+        ? item
+        : item.copyWith(
+            limitsByRange: <String, StandardItemLimit>{
+              ...item.limitsByRange,
+              rangeKey: limitOverride,
+            },
+          );
     final ItemReport raw = _computeRaw(
-      item: item,
+      item: effective,
       rangeKey: rangeKey,
       segments: segments,
       labMean: labMean,
@@ -816,8 +847,8 @@ class GbCalculator {
     // 数据量门槛强制拦截：条数不足时不得出具合格/不合格结论。
     // 保留逐步计算过程（可追溯），只把结论改为「无法判定」并追加原因。
     if (raw.conclusion == GbConclusion.notApplicable) return raw;
-    if (!dataSufficient(item.id, rangeKey, segments)) {
-      final String problems = checkSegments(item.id, rangeKey, segments);
+    if (!dataSufficient(effective.id, rangeKey, segments)) {
+      final String problems = checkSegments(effective.id, rangeKey, segments);
       return raw.copyWith(
         conclusion: GbConclusion.notApplicable,
         dataNote: problems.isEmpty
@@ -848,7 +879,8 @@ class GbCalculator {
         ? problems
         : <String>[
             if (problems.isNotEmpty) problems,
-            '已按你的选择跳过 $skipped 个数据分段，仅按勾选的分段出结论',
+            '有 $skipped 个数据分段未参与计算（未勾选或数据量不足被自动停用），'
+                '仅按已启用分段出结论',
           ].join('；');
     switch (item.id) {
       case 'indication_error':
@@ -892,9 +924,9 @@ class GbCalculator {
       case 'sample_compare':
         return _sampleCompare(item, rangeKey, active, dataNote, labMean);
       case 'maintenance':
-        return _maintenance(item, maintenanceHours);
+        return _maintenance(item, rangeKey, maintenanceHours);
       case 'data_availability':
-        return _dataAvailability(item, validCount, totalCount);
+        return _dataAvailability(item, rangeKey, validCount, totalCount);
       case 'conformity':
         return _conformity(item, rangeKey, active, dataNote);
       default:
@@ -2017,11 +2049,18 @@ class GbCalculator {
 
   // ---------------------------------------------------------------- 5.5.1.11 维护周期
 
-  static ItemReport _maintenance(VerificationItem item, double? hours) {
+  /// 最小维护周期：限值必须按 [rangeKey] 取，不能写死 'basic'。
+  /// 否则扩展量程下用户自定义判定限会被静默忽略，且报告量程标错。
+  static ItemReport _maintenance(
+    VerificationItem item,
+    String rangeKey,
+    double? hours,
+  ) {
     if (hours == null) {
-      return _na(item, 'basic', '请先录入两次维护之间的间隔小时数。');
+      return _na(item, rangeKey, '请先录入两次维护之间的间隔小时数。');
     }
-    final StandardItemLimit? limit = item.limitFor('basic');
+    final StandardItemLimit? limit = item.limitFor(rangeKey);
+    final double limitValue = limit?.absolute ?? 168;
     final List<CalcStep> steps = <CalcStep>[
       CalcStep(
         no: 1,
@@ -2032,25 +2071,27 @@ class GbCalculator {
         unit: 'h',
         note:
             '整个检测周期内任何 2 次维护（倾倒废液、添加试剂、更换量程及维修等）'
-            '的间隔均应不小于 168 h；判定用其中的最小间隔。',
+            '的间隔均应不小于 ${_fmt(limitValue, 0)} h；判定用其中的最小间隔。',
       ),
     ];
     return ItemReport(
       itemId: item.id,
       itemName: item.name,
       clause: item.clause,
-      rangeKey: 'basic',
+      rangeKey: rangeKey,
       conclusion: _judge(
         item,
-        'basic',
+        rangeKey,
         hours,
-        limit?.absolute ?? 168,
+        limitValue,
         limit?.higherIsFail ?? false,
       ),
       metricValue: hours,
       metricDisplay: '${_fmt(hours, 1)} h',
-      limitDisplay: '≥168 h',
-      ratio: _ratio(hours, limit?.absolute ?? 168),
+      // 限值文本必须跟着生效限值走：用户自定义判定限（如 ≥200 h）时
+      // 若仍硬编码 ≥168 h，就会出现「按 200 h 判不合格、报告写 ≥168 h」的错位。
+      limitDisplay: '≥${_fmt(limitValue, 0)} h',
+      ratio: _ratio(hours, limitValue),
       steps: steps,
       subLabel: '最短维护间隔',
     );
@@ -2058,25 +2099,28 @@ class GbCalculator {
 
   // ---------------------------------------------------------------- 5.5.1.12 数据有效率
 
+  /// 数据有效率：同 [_maintenance]，限值 / 量程标记必须按 [rangeKey] 取。
   static ItemReport _dataAvailability(
     VerificationItem item,
+    String rangeKey,
     int? validCount,
     int? totalCount,
   ) {
     if (validCount == null || totalCount == null || totalCount <= 0) {
-      return _na(item, 'basic', '请先录入有效数据个数与应获得的总数据个数。');
+      return _na(item, rangeKey, '请先录入有效数据个数与应获得的总数据个数。');
     }
     // 防御：有效数不可能超过总数，否则会算出 >100% 并判「合格」。
     if (validCount > totalCount) {
       return _na(
         item,
-        'basic',
+        rangeKey,
         '有效数据个数（$validCount）不能大于应获得的总数据个数（$totalCount），'
-            '请检查录入。',
+        '请检查录入。',
       );
     }
     final double d = validCount / totalCount * 100;
-    final StandardItemLimit? limit = item.limitFor('basic');
+    final StandardItemLimit? limit = item.limitFor(rangeKey);
+    final double limitValue = limit?.percent ?? 90;
     final List<CalcStep> steps = <CalcStep>[
       CalcStep(
         no: 1,
@@ -2092,12 +2136,12 @@ class GbCalculator {
       itemId: item.id,
       itemName: item.name,
       clause: item.clause,
-      rangeKey: 'basic',
-      conclusion: _judge(item, 'basic', d, limit?.percent ?? 90, false),
+      rangeKey: rangeKey,
+      conclusion: _judge(item, rangeKey, d, limitValue, false),
       metricValue: d,
       metricDisplay: '${_fmt(d, 2)} %',
-      limitDisplay: '≥${_fmt(limit?.percent ?? 90, 0)}%',
-      ratio: _ratio(d, limit?.percent ?? 90),
+      limitDisplay: '≥${_fmt(limitValue, 0)}%',
+      ratio: _ratio(d, limitValue),
       steps: steps,
       subLabel: '有效 $validCount / 总 $totalCount',
     );

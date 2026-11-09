@@ -468,7 +468,7 @@ class _DraftCard extends StatelessWidget {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: kPrimaryLight,
+                    color: appSoftSurface(context),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Icon(
@@ -594,7 +594,7 @@ class _WorkspaceCard extends StatelessWidget {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: kPrimaryLight,
+                    color: appSoftSurface(context),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Icon(
@@ -623,15 +623,31 @@ class _WorkspaceCard extends StatelessWidget {
               runSpacing: 6,
               children: <Widget>[
                 if (workspace.contractNo.isNotEmpty)
-                  _chip(Icons.numbers_outlined, '合同：${workspace.contractNo}'),
+                  _chip(
+                    context,
+                    Icons.numbers_outlined,
+                    '合同：${workspace.contractNo}',
+                  ),
                 if (workspace.projectName.isNotEmpty)
-                  _chip(Icons.business_outlined, '项目：${workspace.projectName}'),
+                  _chip(
+                    context,
+                    Icons.business_outlined,
+                    '项目：${workspace.projectName}',
+                  ),
                 if (workspace.owner.isNotEmpty)
-                  _chip(Icons.person_outline, '负责人：${workspace.owner}'),
-                _chip(Icons.science_outlined, '检测：$itemLabel'),
+                  _chip(
+                    context,
+                    Icons.person_outline,
+                    '负责人：${workspace.owner}',
+                  ),
+                _chip(context, Icons.science_outlined, '检测：$itemLabel'),
                 if (workspace.remark.isNotEmpty)
-                  _chip(Icons.notes_outlined, '备注：${workspace.remark}'),
-                if (!implemented) _notImplementedChip(),
+                  _chip(
+                    context,
+                    Icons.notes_outlined,
+                    '备注：${workspace.remark}',
+                  ),
+                if (!implemented) _notImplementedChip(context),
               ],
             ),
             const SizedBox(height: 8),
@@ -678,27 +694,27 @@ class _WorkspaceCard extends StatelessWidget {
   }
 
   /// 「标准未内置」灰色小标记。
-  Widget _notImplementedChip() => Container(
+  Widget _notImplementedChip(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     decoration: BoxDecoration(
-      color: const Color(0xFFF5F5F5),
+      color: appNeutralSurface(context),
       borderRadius: BorderRadius.circular(6),
-      border: Border.all(color: const Color(0xFFE0E0E0)),
+      border: Border.all(color: appHairline(context)),
     ),
     child: const Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         Icon(Icons.info_outline, size: 13, color: kNeutralGrey),
         SizedBox(width: 4),
-        Text('标准未内置', style: TextStyle(fontSize: 11, color: Color(0xFF757575))),
+        Text('标准未内置', style: TextStyle(fontSize: 11, color: kNeutralGrey)),
       ],
     ),
   );
 
-  Widget _chip(IconData icon, String text) => Container(
+  Widget _chip(BuildContext context, IconData icon, String text) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     decoration: BoxDecoration(
-      color: kPrimaryLight.withValues(alpha: 0.6),
+      color: appSoftSurface(context),
       borderRadius: BorderRadius.circular(6),
     ),
     child: Row(

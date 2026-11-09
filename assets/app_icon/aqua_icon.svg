@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="AQUA Lab 水质检测仪助手">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B8DFF"/>
+      <stop offset="52%" stop-color="#1F6FEB"/>
+      <stop offset="100%" stop-color="#12B9DE"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="36%" r="64%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.26"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="drop" x1="16%" y1="0%" x2="88%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#CFE6FF"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 全出血渐变底：由系统自行裁圆角，适配 iOS / Android / Web / Windows -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#halo)"/>
+
+  <!-- 检测波纹：两道同心环，弱化到只提供层次 -->
+  <circle cx="512" cy="512" r="322" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="7"/>
+  <circle cx="512" cy="512" r="398" fill="none" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="6"/>
+  <circle cx="512" cy="520" r="232" fill="#FFFFFF" opacity="0.07"/>
+
+  <!-- 主体：几何水滴 -->
+  <path d="M512 236
+           C470 320 372 452 366 566
+           C358 668 424 754 512 754
+           C600 754 666 668 658 566
+           C652 452 554 320 512 236 Z"
+        fill="url(#drop)"/>
+
+  <!-- 水滴内的水面波纹，呼应「水质检测」 -->
+  <path d="M410 580 C450 610 574 610 614 580" fill="none" stroke="#1F6FEB"
+        stroke-opacity="0.22" stroke-width="16" stroke-linecap="round"/>
+  <path d="M432 646 C468 668 556 668 592 646" fill="none" stroke="#1F6FEB"
+        stroke-opacity="0.15" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- 左上高光 -->
+  <path d="M500 302 C470 362 432 432 414 492" fill="none" stroke="url(#shine)"
+        stroke-width="22" stroke-linecap="round" opacity="0.85"/>
+
+  <!-- 右上光点：未来感点缀 -->
+  <circle cx="742" cy="286" r="30" fill="#FFFFFF" opacity="0.12"/>
+  <circle cx="742" cy="286" r="13" fill="#FFFFFF" opacity="0.88"/>
+</svg>

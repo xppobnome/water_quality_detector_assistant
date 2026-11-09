@@ -6,12 +6,16 @@ import 'core/theme.dart';
 import 'pages/shell_page.dart';
 import 'providers/calculation_provider.dart';
 import 'providers/image_to_excel_provider.dart';
+import 'providers/theme_provider.dart';
 import 'providers/transfer_provider.dart';
 import 'providers/workspace_provider.dart';
 import 'services/storage_service.dart';
 import 'services/workspace_store.dart';
 
-/// MaterialApp + 主题 + Provider 注册 + 导航壳。
+/// MaterialApp + 双主题 + Provider 注册 + 导航壳。
+///
+/// 外观由 [ThemeProvider] 驱动：`theme` / `darkTheme` / `themeMode` 三者齐备，
+/// 选择「跟随系统」时系统亮度变化会自动触发重建。
 class WaterQualityApp extends StatelessWidget {
   const WaterQualityApp({super.key, required this.storage});
 
@@ -37,12 +41,21 @@ class WaterQualityApp extends StatelessWidget {
         ChangeNotifierProvider<TransferProvider>(
           create: (_) => TransferProvider(),
         ),
+        ChangeNotifierProvider<ThemeProvider>(
+          create: (_) => ThemeProvider(storage: storage),
+        ),
       ],
-      child: MaterialApp(
-        title: '水质检测仪助手',
-        theme: buildAppTheme(),
-        debugShowCheckedModeBanner: false,
-        home: const ShellPage(),
+      child: Consumer<ThemeProvider>(
+        builder: (BuildContext context, ThemeProvider appearance, Widget? _) {
+          return MaterialApp(
+            title: '水质检测仪助手',
+            theme: buildLightTheme(),
+            darkTheme: buildDarkTheme(),
+            themeMode: appearance.materialThemeMode,
+            debugShowCheckedModeBanner: false,
+            home: const ShellPage(),
+          );
+        },
       ),
     );
   }

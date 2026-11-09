@@ -10,6 +10,7 @@ class StorageService {
   static const String _kOcrApiKey = 'ocr_api_key';
   static const String _kOcrEngine = 'ocr_engine';
   static const String _kOcrEnginePath = 'ocr_engine_path';
+  static const String _kThemeMode = 'app_theme_mode';
 
   SharedPreferences? _prefs;
   bool _loaded = false;
@@ -19,6 +20,9 @@ class StorageService {
   String? _ocrApiKey;
   String _ocrEngine = 'local';
   String? _ocrEnginePath;
+
+  /// 外观模式：'system' / 'light' / 'dark'，默认跟随系统。
+  String _themeMode = 'system';
 
   /// 读取本地偏好（幂等，重复调用安全）。
   Future<void> init() async {
@@ -32,6 +36,7 @@ class StorageService {
       _ocrApiKey = _prefs?.getString(_kOcrApiKey);
       _ocrEngine = _prefs?.getString(_kOcrEngine) ?? 'local';
       _ocrEnginePath = _prefs?.getString(_kOcrEnginePath);
+      _themeMode = _prefs?.getString(_kThemeMode) ?? 'system';
     } catch (_) {
       // 读取失败时保留默认值，不阻断启动。
     }
@@ -55,6 +60,9 @@ class StorageService {
 
   /// 本地 OCR 引擎可执行文件显式路径（可选，留空则用应用目录默认名）。
   String? get ocrEnginePath => _ocrEnginePath;
+
+  /// 外观模式原始值：'system' / 'light' / 'dark'。
+  String get themeMode => _themeMode;
 
   Future<void> setStandardConcentration(double v) async {
     _concentration = v;
@@ -84,5 +92,10 @@ class StorageService {
   Future<void> setOcrEnginePath(String? path) async {
     _ocrEnginePath = path;
     await _prefs?.setString(_kOcrEnginePath, path ?? '');
+  }
+
+  Future<void> setThemeMode(String mode) async {
+    _themeMode = mode;
+    await _prefs?.setString(_kThemeMode, mode);
   }
 }

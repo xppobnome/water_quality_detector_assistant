@@ -1006,6 +1006,12 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
                 : null,
             validCount: item.id == 'data_availability' ? validCount : null,
             totalCount: item.id == 'data_availability' ? totalCount : null,
+            // 工作空间里用户自定义的判定限（本量程专用，其次 * 通配）。
+            // 不用 effectiveLimit()：它会把标准默认值一起返回，无法区分
+            // 「用户覆盖」与「标准默认」，引擎也就无从判断是否需要提示。
+            limitOverride:
+                widget.workspace.overrideLimits[item.id]?[_rangeKey] ??
+                widget.workspace.overrideLimits[item.id]?['*'],
           ),
       ];
 
@@ -1990,9 +1996,25 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
                 Icon(Icons.report_gmailerrorred, size: 15, color: kErrorColor),
                 SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    '数据量未达到标准要求，本项结论将为「无法判定」。'
-                    '请补充数据、勾选其它分段或重新绑定分段。',
+                  child: Text.rich(
+                    TextSpan(
+                      children: <InlineSpan>[
+                        TextSpan(
+                          text: '数据量未达到标准要求，本项结论将为「无法判定」。'
+                              '请补充数据、勾选其它分段或重新绑定分段。',
+                        ),
+                        // 灰色补充说明：缺数据 / 未绑定的分段不进结论。
+                        // 不能说「已自动停用」——此处条数不足的分段通常仍是
+                        // 启用状态（真被自动停用的分段不会触发本分支），
+                        // 否则读者会以为它已被排除却仍被扣住结论。
+                        TextSpan(
+                          text:
+                              '\n（缺数据或未绑定的分段不计入结论；'
+                              '不想补数据时取消勾选该分段，即可按已启用分段出结论）',
+                          style: TextStyle(color: kNeutralGrey),
+                        ),
+                      ],
+                    ),
                     style: TextStyle(
                       fontSize: 11.5,
                       color: kErrorColor,
@@ -2091,8 +2113,9 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
 
     // 停用段整卡置灰，与「前置不参与判定段」同一套视觉。
     final Color background = discard || !enabled
-        ? const Color(0xFFF1F3F6)
-        : const Color(0xFFF7F9FC);
+        ? appNeutralSurface(context)
+        : Theme.of(context).colorScheme.surfaceContainerHighest
+              .withValues(alpha: 0.55);
     final String reuseNotice = enabled
         ? _reuseNoticeOf(samples, otherUsage)
         : '';
@@ -2107,7 +2130,7 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
           border: Border.all(
             color: manual
                 ? kPrimaryColor.withValues(alpha: 0.45)
-                : const Color(0xFFE3E8EF),
+                : appHairline(context),
           ),
         ),
         child: Row(
