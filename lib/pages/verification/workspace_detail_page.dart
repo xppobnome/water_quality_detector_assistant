@@ -45,6 +45,9 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
   /// 页面内是否有「尚未标记为已保存」的改动。
   bool _dirty = false;
 
+  /// 保存进行中（防重入：连点保存不会触发两次归档 → 不会产生两个草稿）。
+  bool _saving = false;
+
   @override
   void initState() {
     super.initState();
@@ -96,6 +99,8 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
   // ---------------------------------------------------------------- 返回拦截
 
   Future<void> _handleBack() async {
+    // 保存进行中不重复弹窗（避免连点堆叠多个对话框）。
+    if (_saving) return;
     final Workspace? ws = _ws;
     if (ws == null) {
       if (mounted) Navigator.of(context).pop();
@@ -134,37 +139,100 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
     if (!mounted || choice == null || choice == 'cancel') return;
 
     if (choice == 'save') {
-      final Workspace? latest = _ws;
-      if (latest == null) {
-        Navigator.of(context).pop();
-        return;
-      }
-      final bool ok = await context.read<WorkspaceProvider>().markSaved(latest);
-      if (!mounted) return;
-      if (!ok) {
-        _toast('保存失败，请重试');
-        return;
-      }
-      _dirty = false;
-      Navigator.of(context).pop();
+      await _saveFromDialog();
       return;
     }
 
     Navigator.of(context).pop();
   }
 
+  /// 返回拦截对话框的「保存」分支：与 AppBar 保存共用 [_saving] 锁，
+  /// await 期间重复触发直接忽略（防重复归档）。
+  Future<void> _saveFromDialog() async {
+    if (_saving) return;
+    final Workspace? latest = _ws;
+    if (latest == null) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final WorkspaceProvider provider = context.read<WorkspaceProvider>();
+      final bool ok = await provider.markSaved(latest);
+      if (!mounted) return;
+      if (!ok) {
+        _toast('保存失败，请重试');
+        return;
+      }
+      final String? warning = provider.lastWarning;
+      if (warning != null) {
+        provider.clearWarning();
+        _toast(warning);
+      }
+      _dirty = false;
+      Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   /// AppBar 主动保存。
+  ///
+  /// 草稿且有内容时，`markSaved` 会把它**归档为正常工作空间并清空草稿位**，
+  /// 因此保存成功后直接返回列表查看结果（列表会多出一条已保存空间、草稿卡
+  /// 回到空态）；空草稿与非草稿只打保存标记，留在本页继续编辑。
+  ///
+  /// 防重入：进入即置 [_saving]，期间 AppBar 按钮禁用、再点也直接返回；
+  /// provider 侧还有按 id 复查的幂等短路，双保险。
   Future<void> _saveNow() async {
+    if (_saving) return;
     final Workspace? ws = _ws;
     if (ws == null) return;
-    final bool ok = await context.read<WorkspaceProvider>().markSaved(ws);
-    if (!mounted) return;
-    if (ok) {
+    setState(() => _saving = true);
+    try {
+      final WorkspaceProvider provider = context.read<WorkspaceProvider>();
+      final bool archiving = ws.isDraft && provider.hasContent(ws);
+      final bool ok = await provider.markSaved(ws);
+      if (!mounted) return;
+      if (!ok) {
+        _toast('保存失败，请重试');
+        return;
+      }
+      // 「已成功但有需要提醒的问题」（归档成功、草稿位重置失败）优先提示。
+      final String? warning = provider.lastWarning;
+      if (warning != null) provider.clearWarning();
+
+      if (archiving) {
+        _toast(warning ?? '草稿已归档到工作空间列表');
+        Navigator.of(context).pop();
+        return;
+      }
+      await _reload();
+      if (!mounted) return;
       setState(() => _dirty = false);
-      _toast('已保存到工作空间');
-    } else {
-      _toast('保存失败，请重试');
+      _toast(warning ?? '已保存到工作空间');
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
+  }
+
+  // ---------------------------------------------------------------- 检测项目
+
+  /// 切换检测项目：**只更新 `parameter`**。
+  ///
+  /// 不改 `item` / `name`，因此拼接名（`Workspace.displayName`）与物理文件夹名
+  /// 都保持不变——工作空间是「已归档的记录」，磁盘目录名是它的外部标识，
+  /// 不能因为切换检测项目而改名。界面上的项目名一律按当前 `parameter` 实时
+  /// 渲染（见 [_title] 与信息卡的项目 Chip）。
+  ///
+  /// 已保存的计算记录（`sessions`）不受影响；切到非「总磷」时计算入口自动
+  /// 置灰（见 build 中的 `canCalc`），切回即恢复。
+  Future<void> _setParameter(String id) async {
+    final Workspace? ws = _ws;
+    if (ws == null || ws.parameter == id) return;
+    await _apply(ws.copyWith(parameter: id));
+    if (!mounted) return;
+    _toast('检测项目已切换为「${gbItemLabelOfId(id)}」');
   }
 
   // ---------------------------------------------------------------- 数据集
@@ -807,9 +875,15 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
           actions: <Widget>[
             if (ws.isUnsaved || _dirty)
               IconButton(
-                tooltip: '保存',
-                icon: const Icon(Icons.save_outlined),
-                onPressed: _saveNow,
+                tooltip: _saving ? '保存中…' : '保存',
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_outlined),
+                onPressed: _saving ? null : _saveNow,
               ),
             const SizedBox(width: 4),
           ],
@@ -988,9 +1062,26 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
     );
   }
 
+  /// 展示标题（草稿恒为「草稿空间」）。
+  ///
+  /// 拼接名里的检测项目段一律按当前 `parameter` 实时渲染：切换检测项目后
+  /// `ws.item` 仍是旧标签（不改名、不改文件夹），但标题要显示当前项目。
   String _title(Workspace ws) {
     if (ws.isDraft) return '草稿空间';
-    return ws.displayName.isNotEmpty ? ws.displayName : ws.name;
+    final String itemLabel = gbItemLabelOfId(ws.parameter);
+    final bool staleItem =
+        ws.item.trim().isNotEmpty && gbItemIdOfLabel(ws.item) != ws.parameter;
+    final String name = staleItem
+        ? Workspace.buildName(
+            ws.projectName,
+            ws.contractNo,
+            ws.owner,
+            itemLabel,
+            ws.remark,
+          )
+        : ws.displayName;
+    if (name.isNotEmpty) return name;
+    return ws.name.isEmpty ? '未命名工作空间' : ws.name;
   }
 
   Widget _sectionHeader({required IconData icon, required String title}) => Row(
@@ -1025,12 +1116,7 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(itemLabel, style: const TextStyle(fontSize: 11)),
-                  backgroundColor: kPrimaryLight,
-                  labelStyle: const TextStyle(color: kPrimaryColor),
-                ),
+                _parameterPicker(ws, itemLabel),
               ],
             ),
             const SizedBox(height: 8),
@@ -1083,6 +1169,64 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
       ),
     );
   }
+
+  /// 检测项目 Chip：点击弹出「总磷 / 氨氮 / 总氮 / COD」菜单。
+  ///
+  /// 只有总磷（HJ 103—2026）内置完整判定，其余项在菜单里标注「标准未内置」。
+  Widget _parameterPicker(Workspace ws, String itemLabel) =>
+      PopupMenuButton<String>(
+        tooltip: '切换检测项目',
+        initialValue: ws.parameter,
+        padding: EdgeInsets.zero,
+        onSelected: (String id) => unawaited(_setParameter(id)),
+        itemBuilder: (BuildContext ctx) => <PopupMenuEntry<String>>[
+          for (final GbItemOption option in gbItemOptions)
+            PopupMenuItem<String>(
+              value: option.id,
+              child: Row(
+                children: <Widget>[
+                  Icon(
+                    option.id == ws.parameter
+                        ? Icons.check_circle_outline
+                        : Icons.circle_outlined,
+                    size: 16,
+                    color: option.id == ws.parameter
+                        ? kPrimaryColor
+                        : kNeutralGrey,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(option.label),
+                  if (standardById(option.id)?.implemented != true) ...<Widget>[
+                    const SizedBox(width: 6),
+                    const Text(
+                      '（标准未内置）',
+                      style: TextStyle(fontSize: 11, color: kNeutralGrey),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+        child: Chip(
+          visualDensity: VisualDensity.compact,
+          backgroundColor: kPrimaryLight,
+          avatar: const Icon(
+            Icons.science_outlined,
+            size: 14,
+            color: kPrimaryColor,
+          ),
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                itemLabel,
+                style: const TextStyle(fontSize: 11, color: kPrimaryColor),
+              ),
+              const Icon(Icons.arrow_drop_down, size: 16, color: kPrimaryColor),
+            ],
+          ),
+        ),
+      );
 
   Widget _infoRow(String label, String value) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 2),

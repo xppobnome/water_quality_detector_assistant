@@ -417,9 +417,203 @@ class GbCalculator {
       case 'repeatability':
       case 'loq':
         return autoBindByLevel(samples, specs);
+      // 24 h 漂移标准要求「每小时 1 次、连续 24 h」，按采样时间绑定最贴近标准；
+      // 时间不足或缺失严重时 [autoBindByHour] 内部回退顺序切分。
+      case 'drift_low24h':
+      case 'drift_high24h':
+        return autoBindByHour(samples, specs);
       default:
         return autoBindSequential(samples, specs);
     }
+  }
+
+  /// 需要「按浓度档位互斥分配」的验证项。
+  ///
+  /// 这三项的每一档都要连续测 6（定量下限 7）次，同一条数据行只能服务其中一项
+  /// 的一档，否则「示值误差 20% 档」与「重复性 20% 档」会抢同一批行，
+  /// 用户以为两档都测了、其实是同一组数据被算了两次。
+  static const Set<String> _levelAllocatedItemIds = <String>{
+    'indication_error',
+    'repeatability',
+    'loq',
+  };
+
+  /// 为多个验证项一次性分配默认数据（互斥分配）。
+  ///
+  /// 场景：用户选中一批行、同时勾选「示值误差 + 重复性」，点开始计算时
+  /// 需要给每一项都预填好分段。若各自独立按浓度分桶，同一批 0.8 mg/L 的 6 条行
+  /// 会同时被两项占用（重复使用，结果虚高）。
+  ///
+  /// 分配规则：
+  /// 1. 汇总所有档位类项目（[itemIds] 中的示值误差 / 重复性 / 定量下限）的目标浓度，
+  ///    作为互斥分桶中心；每条数据行只归入**最接近**的那个浓度桶；
+  /// 2. 桶内按 [GbSample.index] 升序排列，按 [itemIds] 顺序逐个项目、
+  ///    每个项目按 [segmentSpecs] 顺序切出该档 `required` 条（桶内游标前进）；
+  /// 3. 桶里剩余条数不够时该项目该档得空表（不跨桶借数据、不重复使用同一行）；
+  /// 4. 非档位类项目（条件类/单序列类，如电压、温度、漂移、样品比对）
+  ///    不受互斥约束，直接拿到全部 [samples]。
+  ///
+  /// 返回 Map 的 key 覆盖 [itemIds] 全部元素（顺序与入参一致）。
+  static Map<String, List<GbSample>> allocateByLevel({
+    required List<String> itemIds,
+    required String rangeKey,
+    required List<GbSample> samples,
+  }) {
+    final Map<String, List<GbSample>> out = <String, List<GbSample>>{};
+    if (itemIds.isEmpty) return out;
+
+    // 1) 收集档位类项目的全部目标浓度（去重）。
+    final List<double> targets = <double>[];
+    for (final String id in itemIds) {
+      if (!_levelAllocatedItemIds.contains(id)) continue;
+      for (final GbSegmentSpec spec in segmentSpecs(id, rangeKey)) {
+        if (spec.discard) continue;
+        final double? t = spec.target;
+        if (t == null || t <= 0) continue;
+        if (!targets.any((double v) => (v - t).abs() < 1e-9)) targets.add(t);
+      }
+    }
+
+    // 没有任何浓度档位（例如只勾了电压/维护周期）：全部项目拿全部行。
+    if (targets.isEmpty) {
+      for (final String id in itemIds) {
+        out[id] = List<GbSample>.of(samples);
+      }
+      return out;
+    }
+
+    final List<GbSample> ordered = List<GbSample>.of(samples)
+      ..sort((GbSample a, GbSample b) => a.index.compareTo(b.index));
+
+    // 2) 按最接近的目标浓度分桶（互斥：一行只进一个桶）。
+    final Map<double, List<GbSample>> buckets = <double, List<GbSample>>{
+      for (final double t in targets) t: <GbSample>[],
+    };
+    for (final GbSample smp in ordered) {
+      double best = targets.first;
+      double bestDiff = (smp.value - best).abs();
+      for (final double t in targets) {
+        final double diff = (smp.value - t).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = t;
+        }
+      }
+      buckets[best]!.add(smp);
+    }
+
+    // 3) 逐项按规格顺序切桶，桶内游标前进（同一行不会被两个项目重复使用）。
+    final Map<double, int> cursor = <double, int>{
+      for (final double t in targets) t: 0,
+    };
+    for (final String id in itemIds) {
+      if (!_levelAllocatedItemIds.contains(id)) {
+        out[id] = List<GbSample>.of(ordered);
+        continue;
+      }
+      final List<GbSample> picked = <GbSample>[];
+      for (final GbSegmentSpec spec in segmentSpecs(id, rangeKey)) {
+        if (spec.discard) continue;
+        final double? t = spec.target;
+        if (t == null || t <= 0) continue;
+        // 规格目标浓度 → 对应的分桶中心（两者通常完全相同，这里按最近匹配兜底）。
+        double key = targets.first;
+        double bestDiff = (key - t).abs();
+        for (final double cand in targets) {
+          final double diff = (cand - t).abs();
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            key = cand;
+          }
+        }
+        final List<GbSample> bucket = buckets[key] ?? <GbSample>[];
+        final int start = cursor[key] ?? 0;
+        if (start >= bucket.length) {
+          cursor[key] = bucket.length;
+          continue;
+        }
+        final int end = math.min(bucket.length, start + spec.required);
+        picked.addAll(bucket.sublist(start, end));
+        cursor[key] = end;
+      }
+      out[id] = picked;
+    }
+    return out;
+  }
+
+  /// 按采样时间绑定「连续 24 h」序列（24 h 漂移类项目的默认策略）。
+  ///
+  /// 标准要求「约 0.1 mg/L 溶液，每小时测定 1 次，连续 24 h」。用户按月导出的
+  /// 数据集里同一小时可能有多条记录，若直接顺序切分，取到的前 24 条可能只覆盖
+  /// 十几个小时，算出来的「漂移」其实反映的是分钟级波动。
+  ///
+  /// 规则：
+  /// 1. 按 [GbSample.time] 升序（无时间的行排最后，同时间按 index 升序）；
+  /// 2. 取**连续 24 个不同小时**、每小时**第一条**作为参与计算的 24 条；
+  ///    多出来的行追加在同一分段末尾（[checkSegments] 会提示「多出 N 条」，
+  ///    各计算函数内部一律 `take(required)`，不影响数值，也不会静默丢行）；
+  /// 3. 可用小时数不足 24，或时间缺失严重（超过 20% 的行没有时间）时，
+  ///    回退 [autoBindSequential]，行为与本函数引入前一致。
+  ///
+  /// 仅支持单分段序列（24 h 漂移只有一个 `series` 段）；多分段项目一律回退顺序切分。
+  static List<GbSegment> autoBindByHour(
+    List<GbSample> samples,
+    List<GbSegmentSpec> specs,
+  ) {
+    if (specs.isEmpty) return const <GbSegment>[];
+    if (specs.length != 1) return autoBindSequential(samples, specs);
+    final GbSegmentSpec spec = specs.first;
+    final int required = spec.required;
+    if (samples.isEmpty || required <= 0) {
+      return autoBindSequential(samples, specs);
+    }
+
+    final List<GbSample> ordered = List<GbSample>.of(samples)
+      ..sort((GbSample a, GbSample b) {
+        final DateTime? ta = a.time;
+        final DateTime? tb = b.time;
+        if (ta == null && tb == null) return a.index.compareTo(b.index);
+        if (ta == null) return 1;
+        if (tb == null) return -1;
+        final int byTime = ta.compareTo(tb);
+        return byTime != 0 ? byTime : a.index.compareTo(b.index);
+      });
+
+    int missing = 0;
+    final List<GbSample> picked = <GbSample>[];
+    final List<GbSample> rest = <GbSample>[];
+    final Set<String> seenHours = <String>{};
+    for (final GbSample smp in ordered) {
+      final DateTime? t = smp.time;
+      if (t == null) {
+        missing++;
+        rest.add(smp);
+        continue;
+      }
+      final String hourKey = '${t.year}-${t.month}-${t.day}-${t.hour}';
+      if (seenHours.length < required && !seenHours.contains(hourKey)) {
+        seenHours.add(hourKey);
+        picked.add(smp);
+      } else {
+        rest.add(smp);
+      }
+    }
+
+    final bool tooFewHours = picked.length < required;
+    // 时间缺失严重：超过 20% 的行没有时间戳，按小时绑定不可靠。
+    final bool timeMissingSevere = missing * 5 > ordered.length;
+    if (tooFewHours || timeMissingSevere) {
+      return autoBindSequential(samples, specs);
+    }
+
+    return <GbSegment>[
+      GbSegment(
+        key: spec.key,
+        label: spec.label,
+        target: spec.target,
+        samples: <GbSample>[...picked, ...rest],
+      ),
+    ];
   }
 
   // ---------------------------------------------------------------- 数据量校验
@@ -443,9 +637,7 @@ class GbCalculator {
       if (spec.discard) {
         final int dn = seg?.samples.length ?? 0;
         if (dn > spec.required) {
-          problems.add(
-            '${spec.label}：本段不参与判定，已忽略多出的 ${dn - spec.required} 条',
-          );
+          problems.add('${spec.label}：本段不参与判定，已忽略多出的 ${dn - spec.required} 条');
         }
         continue;
       }
@@ -547,9 +739,9 @@ class GbCalculator {
 
   /// 是否覆盖了该项标准要求的**全部分段**。
   ///
-  /// 用户可能只有某一档数据（例如示值误差只有 0.8 mg/L 的 6 条），此时允许
-  /// 只启用该档来「记录」这一档的示值误差，但不能据此出具该项合格结论——
-  /// 标准要求 4 个浓度档全部验证。
+  /// 第 9 轮起**只作为 UI 提示**使用（如「本次仅验证 1/4 档」），
+  /// 不再参与判定：[compute] 按已测档位出结论，用户只测了其中一档且该档合格时，
+  /// 结论就是合格，不会因为「没测满全部档位」而被降级为「无法判定」。
   static bool coverageComplete(
     String itemId,
     String rangeKey,
@@ -590,6 +782,15 @@ class GbCalculator {
 
   /// 计算一个验证项。
   ///
+  /// 判定规则（第 9 轮起）：**按已测档位出结论**。
+  /// - 任一**已启用**档位不合格 → 该项不合格；
+  /// - 全部已启用档位合格 → 该项合格（不再因为「没测满标准要求的全部档位」
+  ///   而强制降级为「无法判定」）；
+  /// - 没有任何可算档位（全部停用 / 数据无法构成有效档位）→ 无法判定。
+  ///
+  /// 仍保留的唯一硬门槛是**条数门槛**：任一启用档位条数不足时不得出结论
+  /// （见 [dataSufficient]），此时结论强制为「无法判定」并说明缺口。
+  ///
   /// - [segments]：分段数据（顺序须与 [segmentSpecs] 一致）；
   /// - [labMean]：实际样品比对所需的实验室测定均值（mg/L）；
   /// - [maintenanceHours]：最小维护周期所需的两次维护间隔（h）；
@@ -624,18 +825,9 @@ class GbCalculator {
             : '数据量未达到标准要求，无法判定：$problems',
       );
     }
-    // 只验证了部分浓度档/条件段：数值照常记录，但不足以出具该项合格结论。
-    if (!coverageComplete(item.id, rangeKey, segments)) {
-      final List<int> c = coverageCounts(item.id, rangeKey, segments);
-      return raw.copyWith(
-        conclusion: GbConclusion.notApplicable,
-        dataNote: <String>[
-          if (raw.dataNote.isNotEmpty) raw.dataNote,
-          '本次仅验证 ${c[0]}/${c[1]} 个分段，按标准该项需全部 ${c[1]} 个分段'
-              '方能判定，故本次结果仅作记录',
-        ].join('；'),
-      );
-    }
+    // 第 9 轮：此处原有的「覆盖不全 → 降级为无法判定」逻辑已删除。
+    // 用户只测了部分档位时，按已测档位出结论（全部合格即合格），
+    // 逐档明细见 ItemReport.tiers，覆盖情况由 UI 单独提示。
     return raw;
   }
 
@@ -726,6 +918,7 @@ class GbCalculator {
     final List<List<String>> detail = <List<String>>[
       <String>['浓度档', '标准值ρ(mg/L)', '测定均值r̄(mg/L)', '次数', '相对误差RE(%)'],
     ];
+    final List<GbTierResult> tiers = <GbTierResult>[];
     double maxAbs = 0;
     bool anyComputed = false;
     final List<String> sampleIds = <String>[];
@@ -739,6 +932,24 @@ class GbCalculator {
       final double re = (mean - seg.target!) / seg.target! * 100;
       anyComputed = true;
       if (re.abs() > maxAbs) maxAbs = re.abs();
+      // 逐档判定：每一档单独与 ±限值比较，供结果页/导出逐档展示。
+      tiers.add(
+        GbTierResult(
+          label: seg.label,
+          valueText: _fmt(re, 2),
+          unit: '%',
+          limitText: '±${_fmt(limit.percent ?? 0, 0)}%',
+          passed:
+              _judge(
+                item,
+                rangeKey,
+                re,
+                limit.percent ?? 0,
+                limit.higherIsFail,
+              ) ==
+              GbConclusion.pass,
+        ),
+      );
 
       steps.add(
         CalcStep(
@@ -814,6 +1025,7 @@ class GbCalculator {
       sampleIds: sampleIds,
       dataNote: dataNote,
       detailRows: detail,
+      tiers: tiers,
     );
   }
 
@@ -905,6 +1117,15 @@ class GbCalculator {
         <String>['测定均值 r̄(mg/L)', '标准偏差 S', 'LOQ(mg/L)', '示值误差(%)'],
         <String>[_fmt(mean, 4), _fmt(std, 5), _fmt(loq, 4), _fmt(re, 2)],
       ],
+      tiers: <GbTierResult>[
+        GbTierResult(
+          label: '定量下限 ${_fmt(target, 3)} mg/L（重复 ${used.length} 次）',
+          valueText: _fmt(loq, 4),
+          unit: 'mg/L',
+          limitText: '≤${_fmt(limit.absolute ?? 0, 3)} mg/L',
+          passed: c == GbConclusion.pass,
+        ),
+      ],
     );
   }
 
@@ -925,6 +1146,7 @@ class GbCalculator {
     bool any = false;
     int computedCount = 0;
     final List<String> ids = <String>[];
+    final List<GbTierResult> tiers = <GbTierResult>[];
     final List<List<String>> detail = <List<String>>[
       <String>['浓度档', '测定均值r̄(mg/L)', '标准偏差s', '次数', 'RSD(%)'],
     ];
@@ -941,6 +1163,24 @@ class GbCalculator {
       any = true;
       computedCount++;
       if (rsd > maxRsd) maxRsd = rsd;
+      // 逐档判定：每一档单独与 RSD 限值比较。
+      tiers.add(
+        GbTierResult(
+          label: seg.label,
+          valueText: _fmt(rsd, 2),
+          unit: '%',
+          limitText: '≤${_fmt(limit.percent ?? 0, 0)}%',
+          passed:
+              _judge(
+                item,
+                rangeKey,
+                rsd,
+                limit.percent ?? 0,
+                limit.higherIsFail,
+              ) ==
+              GbConclusion.pass,
+        ),
+      );
       steps.add(
         CalcStep(
           no: no++,
@@ -1009,6 +1249,7 @@ class GbCalculator {
       sampleIds: ids,
       dataNote: dataNote,
       detailRows: detail,
+      tiers: tiers,
     );
   }
 
@@ -1070,18 +1311,20 @@ class GbCalculator {
       ),
     ];
 
+    final GbConclusion lowConclusion = _judge(
+      item,
+      rangeKey,
+      drift,
+      limit.absolute ?? 0,
+      limit.higherIsFail,
+    );
+
     return ItemReport(
       itemId: item.id,
       itemName: item.name,
       clause: item.clause,
       rangeKey: rangeKey,
-      conclusion: _judge(
-        item,
-        rangeKey,
-        drift,
-        limit.absolute ?? 0,
-        limit.higherIsFail,
-      ),
+      conclusion: lowConclusion,
       metricValue: drift,
       metricDisplay: '${_fmt(drift, 4)} mg/L',
       limitDisplay: '≤${_fmt(limit.absolute ?? 0, 3)} mg/L',
@@ -1092,6 +1335,15 @@ class GbCalculator {
       detailRows: <List<String>>[
         <String>['初期值 r̄₀(mg/L)', '测定次数 n', '漂移 r̄_E(mg/L)'],
         <String>[_fmt(r0, 4), '${xs.length}', _fmt(drift, 4)],
+      ],
+      tiers: <GbTierResult>[
+        GbTierResult(
+          label: '约 0.1 mg/L 连续 ${xs.length} h',
+          valueText: _fmt(drift, 4),
+          unit: 'mg/L',
+          limitText: '≤${_fmt(limit.absolute ?? 0, 3)} mg/L',
+          passed: lowConclusion == GbConclusion.pass,
+        ),
       ],
     );
   }
@@ -1153,18 +1405,20 @@ class GbCalculator {
       ),
     ];
 
+    final GbConclusion highConclusion = _judge(
+      item,
+      rangeKey,
+      rd,
+      limit.percent ?? 0,
+      limit.higherIsFail,
+    );
+
     return ItemReport(
       itemId: item.id,
       itemName: item.name,
       clause: item.clause,
       rangeKey: rangeKey,
-      conclusion: _judge(
-        item,
-        rangeKey,
-        rd,
-        limit.percent ?? 0,
-        limit.higherIsFail,
-      ),
+      conclusion: highConclusion,
       metricValue: rd,
       metricDisplay: '${_fmt(rd, 2)} %',
       limitDisplay: '≤${_fmt(limit.percent ?? 0, 0)}%',
@@ -1175,6 +1429,16 @@ class GbCalculator {
       detailRows: <List<String>>[
         <String>['初期值 r̄₀(mg/L)', '平均绝对偏差 Δ̄(mg/L)', '上限值 r_UL', 'RD(%)'],
         <String>[_fmt(r0, 4), _fmt(meanDev, 4), _fmt(rUl, 1), _fmt(rd, 2)],
+      ],
+      tiers: <GbTierResult>[
+        GbTierResult(
+          label:
+              '上限值 80%（${mgL(upperLimitOf(rangeKey) * 0.8)}）连续 ${xs.length} h',
+          valueText: _fmt(rd, 2),
+          unit: '%',
+          limitText: '≤${_fmt(limit.percent ?? 0, 0)}%',
+          passed: highConclusion == GbConclusion.pass,
+        ),
       ],
     );
   }
@@ -1247,18 +1511,20 @@ class GbCalculator {
       ),
     ];
 
+    final GbConclusion memConclusion = _judge(
+      item,
+      rangeKey,
+      re,
+      limit.percent ?? 0,
+      limit.higherIsFail,
+    );
+
     return ItemReport(
       itemId: item.id,
       itemName: item.name,
       clause: item.clause,
       rangeKey: rangeKey,
-      conclusion: _judge(
-        item,
-        rangeKey,
-        re,
-        limit.percent ?? 0,
-        limit.higherIsFail,
-      ),
+      conclusion: memConclusion,
       metricValue: re,
       metricDisplay: '${_fmt(re, 2)} %',
       limitDisplay: '±${_fmt(limit.percent ?? 0, 0)}%',
@@ -1275,6 +1541,15 @@ class GbCalculator {
           'RE₁(%)',
         ],
         <String>[dirText, _fmt(r1, 4), _fmt(mean, 4), _fmt(re, 2)],
+      ],
+      tiers: <GbTierResult>[
+        GbTierResult(
+          label: '$dirText 方向（首次值对比后 ${rest.length} 次）',
+          valueText: _fmt(re, 2),
+          unit: '%',
+          limitText: '±${_fmt(limit.percent ?? 0, 0)}%',
+          passed: memConclusion == GbConclusion.pass,
+        ),
       ],
     );
   }
@@ -1331,6 +1606,15 @@ class GbCalculator {
     final List<List<String>> detail = <List<String>>[
       <String>['条件', '测定均值(mg/L)', '次数', '相对误差(%)'],
     ];
+    final List<GbTierResult> tiers = <GbTierResult>[
+      GbTierResult(
+        label: base.label,
+        valueText: _fmt(rBase, 4),
+        unit: 'mg/L',
+        limitText: '基准',
+        passed: true,
+      ),
+    ];
     detail.add(<String>[baseLabel, _fmt(rBase, 4), '${baseXs.length}', '—']);
 
     for (int i = 0; i < condKeys.length; i++) {
@@ -1351,6 +1635,25 @@ class GbCalculator {
         if (re.abs() > maxAbs) maxAbs = re.abs();
       }
       ids.addAll(seg.samples.map((GbSample s) => s.id));
+      // 逐条件判定：每个影响量条件单独与该条件限值比较。
+      tiers.add(
+        GbTierResult(
+          label: seg.label,
+          valueText: _fmt(re, 2),
+          unit: '%',
+          limitText: '±${_fmt(limit.percent ?? 0, 0)}%',
+          passed: re.isFinite
+              ? _judge(
+                      item,
+                      rangeKey,
+                      re,
+                      limit.percent ?? 0,
+                      limit.higherIsFail,
+                    ) ==
+                    GbConclusion.pass
+              : false,
+        ),
+      );
       steps.add(
         CalcStep(
           no: no++,
@@ -1373,11 +1676,7 @@ class GbCalculator {
 
     if (!hasCond) return _na(item, rangeKey, '缺少对比条件数据，无法计算影响量。');
     if (!any) {
-      return _na(
-        item,
-        rangeKey,
-        '「$baseLabel」条件测定均值为 0，无法计算相对误差。',
-      );
+      return _na(item, rangeKey, '「$baseLabel」条件测定均值为 0，无法计算相对误差。');
     }
 
     steps.add(
@@ -1416,6 +1715,7 @@ class GbCalculator {
       sampleIds: ids,
       dataNote: dataNote,
       detailRows: detail,
+      tiers: tiers,
     );
   }
 
@@ -1475,6 +1775,22 @@ class GbCalculator {
     ];
     detail.add(<String>['20 ℃（9 次）', _fmt(r7, 4), '${t20xs.length}', '—']);
 
+    // 逐档判定：5 个温度段各一条。3 段 20 ℃ 是基准条件（不单独判定合格与否），
+    // 5 ℃ 与 40 ℃ 才是被考核的条件段。
+    final List<GbTierResult> tiers = <GbTierResult>[
+      for (final GbSegment s in t20)
+        GbTierResult(
+          label: s.label,
+          valueText: _fmt(
+            _mean(s.samples.take(3).map((GbSample x) => x.value).toList()),
+            4,
+          ),
+          unit: 'mg/L',
+          limitText: '基准',
+          passed: true,
+        ),
+    ];
+
     for (final MapEntry<String, String> e in <String, String>{
       't5': '5 ℃',
       't40': '40 ℃',
@@ -1493,6 +1809,25 @@ class GbCalculator {
         if (re.abs() > maxAbs) maxAbs = re.abs();
       }
       ids.addAll(seg.samples.map((GbSample s) => s.id));
+      // 逐温度段判定：5 ℃ / 40 ℃ 各自与限值比较。
+      tiers.add(
+        GbTierResult(
+          label: seg.label,
+          valueText: _fmt(re, 2),
+          unit: '%',
+          limitText: '±${_fmt(limit.percent ?? 0, 0)}%',
+          passed: re.isFinite
+              ? _judge(
+                      item,
+                      rangeKey,
+                      re,
+                      limit.percent ?? 0,
+                      limit.higherIsFail,
+                    ) ==
+                    GbConclusion.pass
+              : false,
+        ),
+      );
       steps.add(
         CalcStep(
           no: no++,
@@ -1510,11 +1845,7 @@ class GbCalculator {
 
     if (!hasCond) return _na(item, rangeKey, '缺少 5 ℃ 或 40 ℃ 条件数据。');
     if (!any) {
-      return _na(
-        item,
-        rangeKey,
-        '20 ℃ 条件测定均值为 0，无法计算相对误差。',
-      );
+      return _na(item, rangeKey, '20 ℃ 条件测定均值为 0，无法计算相对误差。');
     }
 
     steps.add(
@@ -1553,6 +1884,7 @@ class GbCalculator {
       sampleIds: ids,
       dataNote: dataNote,
       detailRows: detail,
+      tiers: tiers,
     );
   }
 
@@ -1666,6 +1998,19 @@ class GbCalculator {
               ? '≤${_fmt(limit.absolute ?? 0, 3)} mg/L'
               : '≤${_fmt(limit.percent ?? 0, 0)}%',
         ],
+      ],
+      tiers: <GbTierResult>[
+        GbTierResult(
+          label:
+              '实验室均值 ${_fmt(labMean, 4)} mg/L'
+              '（${lowSide ? '绝对误差' : '相对误差'}）',
+          valueText: lowSide ? _fmt(metric, 4) : _fmt(metric, 2),
+          unit: lowSide ? 'mg/L' : '%',
+          limitText: lowSide
+              ? '≤${_fmt(limit.absolute ?? 0, 3)} mg/L'
+              : '≤${_fmt(limit.percent ?? 0, 0)}%',
+          passed: c == GbConclusion.pass,
+        ),
       ],
     );
   }
@@ -1834,6 +2179,24 @@ class GbCalculator {
         ? GbConclusion.fail
         : _judge(item, rangeKey, cd, limit.percent ?? 0, limit.higherIsFail);
 
+    // 逐台判定：3 台仪器各一条，记录该台测定均值；合格与否由联合的一致性偏差
+    // CD 决定（标准要求 3 台同时测同一时段，单台无法独立判定）。
+    final List<GbTierResult> tiers = <GbTierResult>[
+      for (int i = 0; i < 3; i++)
+        GbTierResult(
+          label: segments[i].label,
+          valueText: _fmt(
+            _mean(
+              segments[i].samples.take(m).map((GbSample x) => x.value).toList(),
+            ),
+            4,
+          ),
+          unit: 'mg/L',
+          limitText: 'CD ≤${_fmt(limit.percent ?? 0, 0)}%',
+          passed: c == GbConclusion.pass,
+        ),
+    ];
+
     return ItemReport(
       itemId: item.id,
       itemName: item.name,
@@ -1852,6 +2215,7 @@ class GbCalculator {
         <String>['时段数 m', '最大 RSDⱼ(%)', '超 10% 时段数', 'CD(%)'],
         <String>['$m', _fmt(maxRsd, 2), '$overCount', _fmt(cd, 2)],
       ],
+      tiers: tiers,
     );
   }
 

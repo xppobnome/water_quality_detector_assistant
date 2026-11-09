@@ -296,7 +296,7 @@ class GbExcelExporter {
     Workspace workspace,
     CalcSession session,
   ) {
-    final _SheetBuilder builder = _SheetBuilder(excel[sheetSummary], 8);
+    final _SheetBuilder builder = _SheetBuilder(excel[sheetSummary], 9);
 
     builder.addMergedRow(
       '结果汇总：${session.datasetName}　'
@@ -315,6 +315,7 @@ class GbExcelExporter {
       '判定用原始值（未舍入）',
       '限值',
       '判定',
+      '不合格档位',
       '备注',
     ], header: true);
 
@@ -327,6 +328,7 @@ class GbExcelExporter {
         _rawMetric(report),
         report.limitDisplay.isEmpty ? '—' : report.limitDisplay,
         conclusionLabel(report.conclusion),
+        _failedTiersCell(report),
         _summaryRemark(report),
       ]);
     }
@@ -341,10 +343,7 @@ class GbExcelExporter {
       style: _totalStyle(),
     );
     builder.blank();
-    builder.addMergedRow(
-      '结论说明：${session.overallHint}',
-      style: _subtleStyle(),
-    );
+    builder.addMergedRow('结论说明：${session.overallHint}', style: _subtleStyle());
 
     if (session.note.isNotEmpty) {
       builder.addMergedRow('备注：${session.note}', style: _subtleStyle());
@@ -353,16 +352,22 @@ class GbExcelExporter {
     builder.applyColumnWidths();
   }
 
-  /// 展示用指标值。
+  /// 展示用指标值：与界面完全一致，不追加任何前缀。
+  static String _metricCell(ItemReport report) =>
+      report.metricDisplay.isEmpty ? '—' : report.metricDisplay;
+
+  /// 不合格档位（多档位项目用来说明具体是哪一档超标），无则「—」。
   ///
-  /// 结论为「无法判定」时，指标值只是按不完整数据算出的参考值，
-  /// 必须标注「（参考）」，否则会和「无法判定」并列造成「已经算出来了」的误解。
-  static String _metricCell(ItemReport report) {
-    if (report.metricDisplay.isEmpty) return '—';
-    if (report.conclusion == GbConclusion.notApplicable) {
-      return '（参考）${report.metricDisplay}';
+  /// 一致性偏差（conformity）是 3 台仪器**联合判定**：引擎把联合结论同时写入
+  /// 3 条 tier 的 `passed`，直接拼接会得到「第 1 台仪器、第 2 台仪器、第 3 台仪器」
+  /// 的误导文案，故不合格时统一写「三台联合判定」。
+  static String _failedTiersCell(ItemReport report) {
+    if (report.itemId == 'conformity') {
+      return report.conclusion == GbConclusion.fail ? '三台联合判定' : '—';
     }
-    return report.metricDisplay;
+    return report.failedTierLabels.isEmpty
+        ? '—'
+        : report.failedTierLabels.join('、');
   }
 
   /// 判定用的**未舍入**指标值。
@@ -388,8 +393,8 @@ class GbExcelExporter {
   static void _buildStandardSheet(Excel excel, CalcSession session) {
     final _SheetBuilder builder = _SheetBuilder(excel[sheetStandard], 5);
     // 按会话记录的检测项目取标准；旧数据没有该字段时回落到总磷。
-    final Standard std = standardById(session.parameterId) ??
-        totalPhosphorusStandard;
+    final Standard std =
+        standardById(session.parameterId) ?? totalPhosphorusStandard;
 
     builder.addMergedRow(
       '标准依据：${std.code}'

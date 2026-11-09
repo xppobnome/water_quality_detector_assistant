@@ -12,6 +12,29 @@ import '../widgets/trash_view.dart';
 import '../widgets/workspace_create_sheet.dart';
 import 'verification/workspace_detail_page.dart';
 
+/// 展示标题：拼接名里的检测项目段按当前 `parameter` 实时渲染。
+///
+/// 切换检测项目只改 `parameter`、不改 `item`（避免重命名物理文件夹），
+/// 因此 `Workspace.displayName` 里可能残留旧标签，列表卡片一律走本函数。
+/// 存量自由文本检测项目（如「总磷(TP)」且 parameter 一致）保持原文不变。
+String _workspaceTitle(Workspace ws) {
+  if (ws.isDraft) return '草稿空间';
+  final String itemLabel = gbItemLabelOfId(ws.parameter);
+  final bool staleItem =
+      ws.item.trim().isNotEmpty && gbItemIdOfLabel(ws.item) != ws.parameter;
+  final String name = staleItem
+      ? Workspace.buildName(
+          ws.projectName,
+          ws.contractNo,
+          ws.owner,
+          itemLabel,
+          ws.remark,
+        )
+      : ws.displayName;
+  if (name.isNotEmpty) return name;
+  return ws.name.isEmpty ? '未命名工作空间' : ws.name;
+}
+
 /// 工作空间页（左侧 tab）：增删改查 / 排序 / 模糊搜索 / 检测项目筛选 / 回收站。
 ///
 /// 页面顶部恒有一张「草稿空间」卡片（存在草稿时），其余工作空间按拼接名
@@ -548,9 +571,7 @@ class _WorkspaceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String title = workspace.displayName.isNotEmpty
-        ? workspace.displayName
-        : workspace.name;
+    final String title = _workspaceTitle(workspace);
     final int measurementCount = workspace.datasets.fold<int>(
       0,
       (int sum, Dataset d) => sum + d.measurements.length,

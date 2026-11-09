@@ -10,6 +10,8 @@
 ## 1. 结论摘要
 
 > **2026-11-08 更新**：P0/P1 已由工程师修复，第二轮复验结论见 **§10**；第二轮新发现的 N1~N5 已于第三轮复验中全部修复，见 **§11**。**当前状态：P0 = 0，P1 = 0，无新增回归，QA 放行。**
+>
+> **2026-11-09 更新（第 9 轮）**：本轮 5 项改动（草稿归档清空 / 默认互斥分配 / 按已测档位判定 / 导出提示可关闭 / 默认不勾两项）验收见 **§12**：**5 项全部 PASS，无 P0/P1**，另有 2 条 P2 + 3 条 P3 文案/合规建议（`_saveNow` 无防重入、满档时重复性无行可用的文案、未测满档位仍出「合格」的标注）。
 
 **不建议直接交付：存在 2 个 P0（其中 P0-1 会在标准操作流程下产出错误的「不合格」结论）、8 个 P1。**
 
@@ -397,3 +399,71 @@
 ## 11.4 放行结论
 
 **N1~N5 全部修复，P0 与 P1 均清零，无新增回归。** 计算引擎（13 项公式/限值/数据量门槛/总体结论覆盖度）与本轮 UI 接线可进入交付；上述 §11.3 四条为文案/易用性建议，可随下一迭代处理。
+
+---
+
+# 12. 第 9 轮验收（5 项改动，2026-11-09）
+
+范围：只验收本轮 5 项改动（草稿归档 / 默认分配 / 按已测档位 / 导出提示 / 默认不勾两项）。
+只读 + 跑脚本，未修改 `lib/` 下任何文件；仅新增/更新 `.tmp_ocr_test/*.dart`。
+
+## 12.1 结论：4 项 PASS + 1 项 PASS（附 2 条 P2 观察），无 P0/P1
+
+| # | 验收项 | 判定 | 关键证据 |
+|---|---|---|---|
+| 1 | 草稿保存后清空（归档 + 重建空草稿） | **PASS**（2 条 P2 观察见 §12.3） | `markSaved` 顺序为「先 `_store.update(archived)` 写盘 → 再 `create(_emptyDraft())`」（`workspace_provider.dart:200-217`）；归档沿用**同一 id**，`WorkspaceStore.update` 走目录重命名（附件随目录整体搬迁，`workspace_store.dart:172-203`）；`copyWith(isDraft:false)` 保留 id/datasets/sessions/files/overrideLimits（探针 D1 全 PASS）；空草稿/非草稿只打标记（`:174-176`）；step1 失败 `return false` 且草稿不动 |
+| 2 | 默认分配改用 `allocateByLevel` + `autoBind`，缓存失效，手动绑定优先 | **PASS**（1 条 P2 观察见 §12.3） | `_allocation()`（`calc_setup_page.dart:455-478`）→ `allocateByLevel`；`_autoBind`（`:484-492`）先取分配行再 `GbCalculator.autoBind`。缓存失效 4 条路径实测：已选行 `:674`、量程 `:688`、检测项目 `:1322`、重新分组 `:759`（统一在 `_rebuildSegments` `:436` 置空）。手动绑定覆盖优先级：`_applyManual` 在自动结果之上按段覆盖（`:549-567`），且只从 `_selectedSamples` 取行 |
+| 3 | 按已测档位判定（删 coverage 降级 / 留 dataSufficient / overall 闸门） | **PASS**（1 条合规观察见 §12.3） | `compute()` 已无 `coverageComplete` 降级（`gb_calculator.dart:828-831`），`dataSufficient` 拦截保留（`:819-827`）；`overall` 闸门完整（`gb_verify.dart:459-465`：不合格 → 不合格；na 或 `missingItemCount>0` → 无法判定；否则 passCount>0 → 合格）；全仓「（参考）」仅剩一行注释（`calc_result_page.dart:20`）；`failedTierLabels` 渲染 3 处（badge tooltip `:384`、内联红字 `:689-710`、文本报告 `:1061`）+ Excel「不合格档位」列（`gb_excel_export.dart:318` / `:356-372`） |
+| 4 | 导出提示可关闭 + 仍是 4 个工作表 | **PASS**（源码级） | `SnackBar(showCloseIcon: true, closeIconColor: …, duration: 8s)`（`calc_result_page.dart:973-983`）；4 表：`_buildDatasetSheet/_buildProcessSheet/_buildSummarySheet/_buildStandardSheet` + 删除模板空表（`gb_excel_export.dart:104-120`），表名常量 `:32-41` |
+| 5 | 默认不勾 sample_compare / data_availability，手动与全选仍可选 | **PASS** | `_itemHasUsableData` 前两行直接 `return false`（`calc_setup_page.dart:350-355`）；`_isDefaultOffItem`（`:358-359`）仅用于 chip 文案「需手动选择」；`_toggleItem` 无条件加入（`:694-703`）、`_setAllItemsSelected(true)` 加入全部适用项（`:403-414`）；chip 的 `onSelected` 永不禁用（`:1779`） |
+
+## 12.2 运行结果
+
+| 命令 | 结果 |
+|---|---|
+| `python .tmp_ocr_test/analyzer_legacy.py` | **80/80，ERRORS (0)，WARNINGS (0)** ✅ |
+| `dart .tmp_ocr_test/test_gb_calc.dart` | **PASS=113 / FAIL=0** ✅（与 lead 基线一致） |
+| `dart .tmp_ocr_test/probe_setup_v2.dart` | **PASS=74 / FAIL=0** ✅（本轮 66 → 74，新增场景 5c） |
+| `dart .tmp_ocr_test/probe_round9.dart` | **PASS=61 / FAIL=0** ✅（本轮新建） |
+| `dart .tmp_ocr_test/test_gb_calc_qa.dart` | **核心 PASS=135 / FAIL=0；GAP=0** ✅（R17 过期断言已按新口径改写） |
+| `dart .tmp_ocr_test/tier_probe.dart` | 运行正常，一致性偏差联合判定文案为「三台联合判定」，无「第 N 台」三连 ✅ |
+| `flutter test .tmp_ocr_test/excel_round9_test.dart` | ⚠ **沙箱内无法执行**（flutter tool 崩在 `process_win.cc:744` 管道创建失败，与本项目 `dart analyze` 崩溃同源）。已保留该测试文件，具备 Flutter 环境时可直接跑 |
+
+## 12.3 新发现（均不阻断本轮 5 项，按严重度排序）
+
+### P2-1 保存动作无防重入，并发双击可产生第二个空草稿（数据不丢）
+- 位置：`workspace_detail_page.dart:161-181`（`_saveNow` 无 `_saving` 标志）、`:844`（`onPressed: _saveNow` 直接绑定）、`workspace_provider.dart:172-220`（`markSaved` 非幂等）。
+- 复现：草稿含内容时快速双击保存图标 → 两次 `markSaved` 都用同一份**陈旧的** `ws`（`isDraft=true, hasContent=true`）：
+  1. 第一次：`update(archived)` 把「草稿空间」改名为「草稿归档 …」，再 `create(_emptyDraft())` 建草稿 A；
+  2. 第二次：同一 id 再被改名（`_dirOf(id)` 仍命中），再 `create(_emptyDraft())` 建草稿 B（`_uniqueDir` 追加后缀）。
+- 结果：列表出现**两个草稿卡**。数据未丢（archived 仍完整），但草稿位语义被破坏。
+- 建议：`_saveNow` 加 `bool _saving` 并在 await 期间禁用按钮；`markSaved` 内以「库里该 id 是否已 `isDraft=false`」做幂等短路。另建议 `_handleBack` 的保存分支复用同一标志。
+- 附带（P3）：`markSaved` 第 2 步失败时返回 `true` 且错误只写进 `provider._error`，`_saveNow` 仍 toast「草稿已归档到工作空间列表」，用户看不到「草稿位重置失败」（`workspace_provider.dart:209-217`）。
+
+### P2-2 标准满档（4 档 × 6 = 24 条）时重复性分不到行，chip 文案误导
+- 位置：`gb_calculator.dart:457-542`（`allocateByLevel` 互斥分配）、`calc_setup_page.dart:484-492`（`_autoBind` 只用分配行）、`:1769-1775`（chip 显示「仅 x/y 个分段有数据」）。
+- 实测（`probe_round9.dart` B4）：24 条 0.8/0.4/2.0/3.2 各 6 条 → 示值误差吃满 **24** 条，重复性 **0** 条；即使手动勾选重复性，分段全空 → 结论「无法判定」，只能靠「重新选择该段数据」手动绑定 6 条。
+- 判定：分配规则本身符合「同一行不重复使用」的口径（重复性应另有 6 条独立测定），**不是算错**；但 chip 只说「仅 0/4 个分段有数据」，没说明真正原因是「数据行已被示值误差占用」，用户会以为数据识别失败。
+- 建议：`_dataCoverageOf` 区分「分配为 0 条」与「条数不足」两种原因，chip 文案改为「数据行已被示值误差占用，需手动绑定」；或在互斥分配后为每个"档位类"项目预留 `required` 条余量。
+
+### P2-3（合规口径）单项只测 1/4 档即出「合格」，报告内的说明措辞不准
+- 实测（`probe_round9.dart` A1）：仅 6 条 0.80 数据 → 示值误差 **合格**（0.50%），`tiers` 1 条，`dataNote` =「已按你的选择跳过 3 个数据分段，仅按勾选的分段出结论」。
+- 两点提示：
+  1. 结论「合格」只覆盖 1/4 档，HJ 103 要求 4 档都测；`overall` 闸门只校验"项"是否算全，不校验档位是否测满，因此**可能出具「总体合格」但示值误差只测了 1 档的报告**。建议结果页/Excel 对「未测满档位」的合格项加显式标记（如「合格（1/4 档）」）。
+  2. 措辞「**已按你的选择**跳过」在默认流程下是错的——这 3 段是"条数不足被自动停用"，不是用户点的。同源文案还有分段卡 `:2021`「未勾选，不参与计算」。建议改为「未参与计算（条数不足/你已停用）」区分来源。
+- 注：该行为是本轮明确需求（按已测档位出结论），此处仅作合规与文案提醒，**不是实现缺陷**。
+
+### P3 其他
+- 总体口径文案用「标准要求的 **14** 项」（`gb_verify.dart:476`），而 PRD/文档写「13 项」——记忆效应拆成两条记录（`totalPhosphorusStandard.items` 实测 14 条）。建议统一为「13 项指标 / 14 条记录」。
+- 默认不勾 `sample_compare` 与 `data_availability` 后，默认流程**不可能**得到总体「合格」（这两项永远算不到），需用户手动补勾并填参数后才可能合格。`overallHint` 会说明「尚有 N 项未计算」，属预期；若产品希望默认可达「合格」，需与 PM 再确认。
+
+## 12.4 本轮交付物
+
+- 新建 `.tmp_ocr_test/probe_round9.dart`（61 断言）：按已测档位 5 组、跨项闸门 7 组、互斥分配 6 组、满档副作用实测、默认不勾两项正反两面、归档模型不变量 9 组。
+- 更新 `.tmp_ocr_test/probe_setup_v2.dart`：场景 5 的 `defaultSelectedItemIds` 复刻已与最新 `_itemHasUsableData` 对齐（`sample_compare`/`data_availability` 默认排除）；新增场景 5c（2 万条数据下仍不勾 + 手动/全选可选中）。
+- 更新 `.tmp_ocr_test/test_gb_calc_qa.dart`：R17 由「必须带（参考）前缀」改为「已无前缀」，并新增「导出模块无（参考）」断言。
+- 新建 `.tmp_ocr_test/excel_round9_test.dart`（flutter test，沙箱不可执行，留待有 Flutter 环境时验证 4 表与「不合格档位」列）。
+
+## 12.5 放行建议
+
+**本轮 5 项改动可放行**：4 项功能验收全部 PASS，第 1 项 PASS 但有 P2-1（防重入）建议尽快补；P2-2/P2-3 为文案与合规口径问题，建议随下一轮一起处理，不阻断交付。无 P0/P1，analyzer 0 error / 0 warning，全部纯 Dart 测试 113 + 74 + 61 + 135 = 383 条断言通过。

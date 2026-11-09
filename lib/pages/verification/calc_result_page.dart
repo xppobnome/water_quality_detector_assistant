@@ -9,17 +9,18 @@ import '../../services/gb_calculator.dart';
 import '../../services/gb_excel_export.dart';
 import '../../services/standard_definitions.dart';
 
-/// 指标值展示文本。
+/// 一致性偏差的项目 id。
 ///
-/// 结论为「无法判定」时，指标值只是用不完整数据算出的**参考值**，
-/// 必须加「（参考）」前缀，否则与「无法判定」并列会让读者误以为已得出结论。
-String gbMetricText(ItemReport report) {
-  if (report.metricDisplay.isEmpty) return '—';
-  if (report.conclusion == GbConclusion.notApplicable) {
-    return '（参考）${report.metricDisplay}';
-  }
-  return report.metricDisplay;
-}
+/// 该项由 **3 台仪器联合判定**（引擎把联合结论同时写入 3 条 tier 的 `passed`），
+/// 因此不得逐台标红，否则会被读成「每台都单独不合格」。
+const String _jointVerdictItemId = 'conformity';
+
+/// 指标值展示文本：直接使用引擎给出的展示值，空值占位为「—」。
+///
+/// 不在展示层追加任何前缀（如旧版的「（参考）」）——「无法判定」的语境
+/// 由结论 Chip、数据量校验提示与标准条款共同承担，前缀反而让表格难以对齐阅读。
+String gbMetricText(ItemReport report) =>
+    report.metricDisplay.isEmpty ? '—' : report.metricDisplay;
 
 /// 国标验证「计算结果」页：总体结论 + 结果总览 + 逐项逐步计算过程。
 ///
@@ -332,15 +333,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
                             ),
                           ),
                         ),
-                        DataCell(
-                          Text(
-                            gbMetricText(report),
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
+                        DataCell(_metricCellWidget(report)),
                         DataCell(
                           Text(
                             report.limitDisplay.isEmpty
@@ -358,6 +351,40 @@ class _CalcResultPageState extends State<CalcResultPage> {
           ],
         ),
       ),
+    );
+  }
+
+  /// 总览表的「指标值」单元格：数值 + 可选的档位警示图标。
+  Widget _metricCellWidget(ItemReport report) {
+    final Widget? badge = _tierBadge(report);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          gbMetricText(report),
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+        ),
+        if (badge != null) ...<Widget>[const SizedBox(width: 4), badge],
+      ],
+    );
+  }
+
+  /// 总览表的档位警示图标（红色），无警示返回 null。
+  ///
+  /// 一致性偏差保留图标（表示该项不合格），但 tooltip 只说明「联合判定」，
+  /// 不列出三台仪器，避免读成「每台都单独不合格」。
+  Widget? _tierBadge(ItemReport report) {
+    if (report.itemId == _jointVerdictItemId) {
+      if (report.conclusion != GbConclusion.fail) return null;
+      return const Tooltip(
+        message: '三台仪器联合判定不合格',
+        child: Icon(Icons.error_outline, size: 14, color: kErrorColor),
+      );
+    }
+    if (report.failedTierLabels.isEmpty) return null;
+    return Tooltip(
+      message: '不符合要求的档位：${report.failedTierLabels.join('、')}',
+      child: const Icon(Icons.error_outline, size: 14, color: kErrorColor),
     );
   }
 
@@ -391,6 +418,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
       report.itemId,
     );
     final Color color = _conclusionColor(report.conclusion);
+    final Widget? tierNotice = _buildTierNotice(report);
 
     return Card(
       margin: EdgeInsets.zero,
@@ -483,12 +511,7 @@ class _CalcResultPageState extends State<CalcResultPage> {
               ),
               child: Row(
                 children: <Widget>[
-                  Expanded(
-                    child: _kvBlock(
-                      '指标值',
-                      gbMetricText(report),
-                    ),
-                  ),
+                  Expanded(child: _kvBlock('指标值', gbMetricText(report))),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _kvBlock(
@@ -499,6 +522,8 @@ class _CalcResultPageState extends State<CalcResultPage> {
                 ],
               ),
             ),
+            // 不合格档位提示（一致性偏差为联合判定，单独处理）
+            if (tierNotice != null) tierNotice,
             // 数据量校验提示
             if (report.dataNote.isNotEmpty) ...<Widget>[
               const SizedBox(height: 10),
@@ -626,6 +651,61 @@ class _CalcResultPageState extends State<CalcResultPage> {
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  /// 逐项卡片的「不合格档位」提示行，无提示返回 null。
+  ///
+  /// - 一致性偏差（[_jointVerdictItemId]）是 3 台仪器**联合判定**：不合格时
+  ///   只给一条不列台号的中性警示，绝不逐台点名（那会把联合结论误读成单台结论）；
+  ///   合格 / 无法判定时不提示。
+  /// - 其余项目照常列出具体不合格档位，合格时不提示。
+  Widget? _buildTierNotice(ItemReport report) {
+    if (report.itemId == _jointVerdictItemId) {
+      if (report.conclusion != GbConclusion.fail) return null;
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Icon(Icons.info_outline, size: 15, color: kWarningColor),
+            const SizedBox(width: 6),
+            const Expanded(
+              child: Text(
+                '三台仪器联合判定不合格（不区分单台）',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.5,
+                  fontWeight: FontWeight.w600,
+                  color: kWarningColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (report.failedTierLabels.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(Icons.error_outline, size: 15, color: kErrorColor),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '不符合要求的档位：${report.failedTierLabels.join('、')}',
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.5,
+                fontWeight: FontWeight.w600,
+                color: kErrorColor,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -892,6 +972,8 @@ class _CalcResultPageState extends State<CalcResultPage> {
         ..showSnackBar(
           SnackBar(
             duration: const Duration(seconds: 8),
+            showCloseIcon: true,
+            closeIconColor: Colors.white70,
             content: Text('已导出：$path'),
             action: SnackBarAction(
               label: '复制路径',
@@ -971,6 +1053,14 @@ class _CalcResultPageState extends State<CalcResultPage> {
         '   指标值：${gbMetricText(report)}'
         '　限值：${report.limitDisplay.isEmpty ? '—' : report.limitDisplay}',
       );
+      if (report.itemId == _jointVerdictItemId) {
+        // 联合判定：不逐台点名，避免读成「每台都单独不合格」。
+        if (report.conclusion == GbConclusion.fail) {
+          buffer.writeln('   三台仪器联合判定不合格（不区分单台）');
+        }
+      } else if (report.failedTierLabels.isNotEmpty) {
+        buffer.writeln('   不符合要求的档位：${report.failedTierLabels.join('、')}');
+      }
       if (report.dataNote.isNotEmpty) {
         buffer.writeln('   数据量校验：${report.dataNote}');
       }

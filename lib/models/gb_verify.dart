@@ -180,6 +180,59 @@ class CalcStep {
   );
 }
 
+/// 单个浓度档 / 条件段的判定结果。
+///
+/// 一个验证项可能由多个档位组成（示值误差在基本量程是「上限值 10%/20%/50%/80%」
+/// 四个浓度档，重复性是 20%/80% 两档，温度是 5 个温度段，电压/浊度各 3 段，
+/// 一致性偏差是 3 台仪器）。旧实现只给出一项总判定，用户看不到「哪一档不合格」；
+/// 本模型把逐档的指标值、限值与判定结果都记录下来，供结果页与 Excel 导出逐档展示。
+///
+/// 逐档结论的聚合规则是「按已测档位出结论」：任一档不合格 → 该项不合格；
+/// 全部已测档位合格 → 该项合格；没有任何可算档位 → 无法判定。
+class GbTierResult {
+  const GbTierResult({
+    required this.label,
+    required this.valueText,
+    this.unit = '',
+    required this.limitText,
+    required this.passed,
+  });
+
+  /// 档位名称，如 `上限值 10%（0.4 mg/L）`、`242 V 连续 3 次`、`第 2 台仪器，168 组`。
+  final String label;
+
+  /// 该档的指标值（已按展示精度格式化），如 `5.12`、`0.8055`。
+  final String valueText;
+
+  /// 指标单位：`%` / `mg/L` / `h`，无单位时为空串。
+  final String unit;
+
+  /// 该档对应的限值展示文本，如 `±5%`、`≤10%`；基准档（不单独判定）为 `基准`。
+  final String limitText;
+
+  /// 该档是否合格。
+  final bool passed;
+
+  /// 指标值 + 单位的合并展示。
+  String get valueWithUnit => unit.isEmpty ? valueText : '$valueText $unit';
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'label': label,
+    'valueText': valueText,
+    'unit': unit,
+    'limitText': limitText,
+    'passed': passed,
+  };
+
+  factory GbTierResult.fromJson(Map<String, dynamic> j) => GbTierResult(
+    label: j['label'] as String? ?? '',
+    valueText: j['valueText'] as String? ?? '',
+    unit: j['unit'] as String? ?? '',
+    limitText: j['limitText'] as String? ?? '',
+    passed: j['passed'] as bool? ?? false,
+  );
+}
+
 /// 单个验证项的完整计算结果（含逐步过程）。
 class ItemReport {
   const ItemReport({
@@ -197,6 +250,7 @@ class ItemReport {
     this.dataNote = '',
     this.subLabel = '',
     this.detailRows = const <List<String>>[],
+    this.tiers = const <GbTierResult>[],
   });
 
   /// 验证项 id，如 `indication_error`。
@@ -240,7 +294,20 @@ class ItemReport {
   /// 附加明细表（如示值误差的各浓度档结果）：首行为表头。
   final List<List<String>> detailRows;
 
+  /// 逐档判定结果（每个浓度档 / 条件段 / 每台仪器一条）。
+  ///
+  /// 单档项目（定量下限、24 h 漂移、记忆效应、实际样品比对、维护周期、
+  /// 数据有效率）只有 1 条；没有可细分档位时为空表。
+  /// 该项总结论即「按已测档位聚合」：任一档不合格 → 不合格。
+  final List<GbTierResult> tiers;
+
   bool get hasMetric => metricValue != null;
+
+  /// 未通过判定的档位名称（供结果页/导出标红与文案汇总）。
+  List<String> get failedTierLabels => <String>[
+    for (final GbTierResult t in tiers)
+      if (!t.passed) t.label,
+  ];
 
   /// 仅用于「数据量不足时把结论降级为无法判定」，其余字段原样保留。
   ItemReport copyWith({GbConclusion? conclusion, String? dataNote}) =>
@@ -259,6 +326,7 @@ class ItemReport {
         dataNote: dataNote ?? this.dataNote,
         subLabel: subLabel,
         detailRows: detailRows,
+        tiers: tiers,
       );
 
   /// 指标值的展示单位。
@@ -279,6 +347,7 @@ class ItemReport {
     'dataNote': dataNote,
     'subLabel': subLabel,
     'detailRows': detailRows,
+    'tiers': tiers.map((GbTierResult t) => t.toJson()).toList(),
   };
 
   factory ItemReport.fromJson(Map<String, dynamic> j) => ItemReport(
@@ -305,6 +374,9 @@ class ItemReport {
           (dynamic e) =>
               List<String>.from((e as List).map((dynamic v) => '$v')),
         )
+        .toList(),
+    tiers: (j['tiers'] as List? ?? <dynamic>[])
+        .map((dynamic e) => GbTierResult.fromJson(e as Map<String, dynamic>))
         .toList(),
   );
 

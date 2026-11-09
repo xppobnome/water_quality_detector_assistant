@@ -4,8 +4,31 @@ import 'package:provider/provider.dart';
 import '../core/constants.dart';
 import '../models/workspace.dart';
 import '../providers/workspace_provider.dart';
+import '../services/standard_definitions.dart';
 import '../utils/workspace_utils.dart';
 import 'workspace_create_sheet.dart';
+
+/// 列表展示名：检测项目段按当前 `parameter` 实时渲染。
+///
+/// 切换检测项目只改 `parameter` 不改 `item`（不重命名物理文件夹），
+/// 因此不能直接展示可能残留旧标签的 `displayName`。
+String _workspaceLabel(Workspace ws) {
+  if (ws.isDraft) return '草稿空间';
+  final String itemLabel = gbItemLabelOfId(ws.parameter);
+  final bool staleItem =
+      ws.item.trim().isNotEmpty && gbItemIdOfLabel(ws.item) != ws.parameter;
+  final String name = staleItem
+      ? Workspace.buildName(
+          ws.projectName,
+          ws.contractNo,
+          ws.owner,
+          itemLabel,
+          ws.remark,
+        )
+      : ws.displayName;
+  if (name.isNotEmpty) return name;
+  return ws.name.isEmpty ? '未命名工作空间' : ws.name;
+}
 
 /// 工作空间选择 bottom sheet：选已有 / 直接新建一个。
 ///
@@ -157,7 +180,7 @@ class WorkspacePickerSheet extends StatelessWidget {
                           color: kPrimaryColor,
                         ),
                         title: Text(
-                          ws.displayName.isNotEmpty ? ws.displayName : ws.name,
+                          _workspaceLabel(ws),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),

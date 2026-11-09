@@ -21,8 +21,8 @@ import 'calc_result_page.dart';
 /// - 页首可切换检测项目（总磷 / 氨氮 / 总氮 / COD）。未内置标准条款的项目只保留
 ///   项目选择器 + 一张说明卡，其余设置卡片不渲染（不再整页替换，用户可随时切回）；
 /// - 默认只勾选「当前量程下确有数据」的验证项，并提供全选/反选切换；
-/// - 每个数据分段可单独勾选是否参与计算，只验证部分浓度档时结论会被标注
-///   「无法判定（仅作记录）」；
+/// - 每个数据分段可单独勾选是否参与计算；只测了部分浓度档时按已测档位出结论，
+///   页面用橙字提示「仅验证 x/y 个分段」；
 /// - 同一批数据行可同时用于多个验证项，页面只做橙色强调，不阻断、不去重。
 class CalcSetupPage extends StatefulWidget {
   const CalcSetupPage({
@@ -105,6 +105,14 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   /// 避免 build 里对每个验证项反复执行 [GbCalculator.autoBind]。
   final Map<String, List<int>> _coverageCache = <String, List<int>>{};
 
+  /// 跨验证项的**顺序分配**结果：itemId → 该项分到的数据行（互不重叠）。
+  ///
+  /// 12 条 0.8 mg/L 数据时，示值误差取前 6、重复性取后 6——同一批行不再被
+  /// 两个验证项各算一遍。null 表示尚未计算（懒加载）；在
+  /// [_rebuildSegments] 里清空，因此「已选行变化 / 量程切换 / 检测项目切换 /
+  /// 重新自动分组 / 勾选变化」都会让它失效并重算。
+  Map<String, List<GbSample>>? _allocCache;
+
   /// 必填参数输入框。
   final TextEditingController _labMeanCtrl = TextEditingController();
   final TextEditingController _validCountCtrl = TextEditingController();
@@ -113,8 +121,9 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   /// 维护间隔输入框列表（每行一个间隔，至少保留 1 行）。
   ///
   /// 只有一个值时即「仅录入了一次间隔」；多个值时按 `T = min(间隔_i)` 取最短。
-  final List<TextEditingController> _maintenanceCtrls =
-      <TextEditingController>[TextEditingController()];
+  final List<TextEditingController> _maintenanceCtrls = <TextEditingController>[
+    TextEditingController(),
+  ];
 
   /// 被删除的间隔控制器：延迟到本 State 销毁时统一 dispose，
   /// 避免 setState 后旧 TextField 仍在卸载过程中访问已释放的控制器。
@@ -131,7 +140,8 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   String _parameterId = 'tp';
 
   /// 当前检测项目的标准（未内置的项目返回其占位 [Standard]）。
-  Standard get _standard => standardById(_parameterId) ?? totalPhosphorusStandard;
+  Standard get _standard =>
+      standardById(_parameterId) ?? totalPhosphorusStandard;
 
   /// 当前项目是否已内置国标条款（未内置时只展示选择器 + 说明卡）。
   bool get _standardSupported => _standard.implemented && _items.isNotEmpty;
@@ -328,22 +338,60 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
 
   /// 该验证项当前是否「有可用数据」可算（决定进入页面时是否默认勾选）。
   ///
-  /// 常规项：至少有一个分段凑够了标准要求的条数。
+  /// 常规项：至少有一个分段凑够了标准要求的条数**且**浓度对得上。
   ///
-  /// **特例 1 —— 数据有效率**：它的两个参数由 [_prefillParameters] 按
-  /// 「已选行数 / 数据集总行数」预填，进入页面就能算出结果，属于「有数据」，
-  /// 因此默认勾选；只有数据集一行都没有（总数为 0，引擎会直接判「无法判定」）
-  /// 时才不默认勾选。最小维护周期必须用户手输维护间隔，仍保持默认不勾。
-  ///
-  /// **特例 2 —— 条件顺序项**（见 [_isConditionSequenceItem]）：条数够不代表
-  /// 数据真的覆盖了各个条件，不自动勾选。
+  /// **默认不勾选的特例**：
+  /// 1. 「实际样品比对」「数据有效率」——前者必须用户先填实验室测定均值才成立，
+  ///    后者结论只取决于两个手填参数（有效数 / 总数）。默认勾上会让用户误以为
+  ///    「系统已经替你算好了」，因此一律默认关闭；
+  ///    **只改默认值**：用户仍可手动勾选，顶部「全选」也能选中它们。
+  /// 2. 条件顺序项（见 [_isConditionSequenceItem]）：条数够不代表数据真的覆盖了
+  ///    各个条件。
   bool _itemHasUsableData(String itemId) {
-    if (itemId == 'data_availability') {
-      // 与 _prefillParameters 的总数口径一致：按数据集原始测量行数判断。
-      return widget.dataset.measurements.isNotEmpty;
-    }
+    if (itemId == 'sample_compare' || itemId == 'data_availability')
+      return false;
     if (_isConditionSequenceItem(itemId)) return false;
     return _dataCoverageOf(itemId)[0] > 0;
+  }
+
+  /// 是否为「默认不勾选、需用户显式选择」的项（不涉及数据是否够）。
+  bool _isDefaultOffItem(String itemId) =>
+      itemId == 'sample_compare' || itemId == 'data_availability';
+
+  /// 是否为**浓度档位类**项目（引擎 `allocateByLevel` 会对它们做互斥分桶）。
+  ///
+  /// 与 `GbCalculator` 内部的档位分配集合同口径，**仅用于文案判断**，
+  /// 不参与任何计算；不一致时最多是提示文案不准，不会影响数值。
+  /// 这三类项的典型特征是「每档需要 6/7 条连续测定」，因此一批满档数据
+  /// 只够喂饱排在前面的那一项。
+  bool _isLevelAllocatedItem(String itemId) =>
+      itemId == 'indication_error' ||
+      itemId == 'repeatability' ||
+      itemId == 'loq';
+
+  /// 假如**不考虑跨项分配**（把全部已选行都给它），该项是否有可用分段。
+  ///
+  /// 只用于区分两种「分到 0 条」：
+  /// - 拿全部行也凑不出来 → 数据集里确实没有该浓度的数据（显示「无可用数据」）；
+  /// - 拿全部行能算，但互斥分配被排在前面的项占走了（显示「已被优先项占用」）。
+  bool _hasUsableDataWithoutAllocation(String itemId) {
+    final List<GbSegmentSpec> specs = GbCalculator.segmentSpecs(
+      itemId,
+      _rangeKey,
+    );
+    if (specs.isEmpty) return false;
+    final List<GbSegment> auto = GbCalculator.autoBind(
+      itemId,
+      _selectedSamples,
+      specs,
+    );
+    for (final GbSegmentSpec spec in specs) {
+      if (spec.discard) continue;
+      if (GbCalculator.segmentUsable(spec, _segmentIn(auto, spec.key))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// 该项是否为「按条件顺序绑定」的多段项（电压 / 浊度 / 环境温度 / 一致性偏差）。
@@ -419,34 +467,70 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   /// 重建所有已选验证项的分段绑定（自动分组 + 手动绑定覆盖 + 启用状态）。
   void _rebuildSegments() {
     _segments.clear();
-    // 数据条数变了，「哪几段真的有数据」的缓存必须失效。
+    // 数据条数/量程/项目变了：覆盖度缓存与「跨项顺序分配」缓存都必须失效。
     _coverageCache.clear();
-    final List<GbSample> samples = _selectedSamples;
+    _allocCache = null;
     for (final VerificationItem item in _items) {
       if (!_selectedItemIds.contains(item.id)) continue;
       _segments[item.id] = _applyEnabled(
         item.id,
-        _applyManual(item.id, _autoBind(item.id, samples)),
+        _applyManual(item.id, _autoBind(item.id)),
       );
     }
   }
 
-  /// 自动分组：统一走 [GbCalculator.autoBind]，由引擎按项目类型选择策略
-  /// （记忆效应用专用桶分类、浓度档类按就近归类、条件类顺序切分）。
-  List<GbSegment> _autoBind(String itemId, List<GbSample> samples) {
+  /// 跨验证项的顺序分配结果（懒加载 + 缓存）。
+  ///
+  /// 用户要求：12 条 0.8 mg/L 数据时，示值误差取前 6 条、重复性取后 6 条，
+  /// 两项**互不重叠**——而不是两项各拿全部 12 条、各算一遍同一批行。
+  ///
+  /// 参与分配的是「当前量程下全部适用**且需要数据行**的项」，按标准声明顺序，
+  /// 并把示值误差提到最前（它最依赖原始浓度档数据）。刻意**不**按"已勾选项"
+  /// 分配：否则用户勾一下重复性就会让示值误差少拿 6 条，分配结果随勾选抖动。
+  /// 需要行但没有被选中的项同样参与分配，从而"占住"它应得的那一份。
+  Map<String, List<GbSample>> _allocation() {
+    final Map<String, List<GbSample>>? cached = _allocCache;
+    if (cached != null) return cached;
+    final List<String> itemIds = <String>[
+      for (final VerificationItem item in _items)
+        // 维护周期 / 数据有效率这类人工录入项不消耗数据行，不参与分配。
+        if (item.appliesTo(_rangeKey) && _needsRows(item.id)) item.id,
+    ];
+    final int ie = itemIds.indexOf('indication_error');
+    if (ie > 0) {
+      itemIds
+        ..removeAt(ie)
+        ..insert(0, 'indication_error');
+    }
+    final Map<String, List<GbSample>> alloc = itemIds.isEmpty
+        ? <String, List<GbSample>>{}
+        : GbCalculator.allocateByLevel(
+            itemIds: itemIds,
+            rangeKey: _rangeKey,
+            samples: _selectedSamples,
+          );
+    _allocCache = alloc;
+    return alloc;
+  }
+
+  /// 自动分组：先取该项**分配到的行**（跨项顺序分配、互不重叠），再交给引擎分组。
+  ///
+  /// 分配结果为空（前面优先的项已经把行用完）时返回的分段全部为空，
+  /// 该项自然被判为「无可用数据」——这是顺序分配的预期结果，不是错误。
+  List<GbSegment> _autoBind(String itemId) {
     final List<GbSegmentSpec> specs = GbCalculator.segmentSpecs(
       itemId,
       _rangeKey,
     );
     if (specs.isEmpty) return const <GbSegment>[];
-    return GbCalculator.autoBind(itemId, samples, specs);
+    final List<GbSample> rows = _allocation()[itemId] ?? const <GbSample>[];
+    return GbCalculator.autoBind(itemId, rows, specs);
   }
 
   /// 纯自动分组结果（不叠加手动绑定、不叠加启用记忆）。
   ///
   /// 用于回答「这批数据在自动归类下能凑出几段」，避免顺序依赖。
-  List<GbSegment> _autoSegmentsOf(String itemId) =>
-      _autoBind(itemId, _selectedSamples);
+  List<GbSegment> _autoSegmentsOf(String itemId) => _autoBind(itemId);
 
   /// 按「用户显式设置 → 数据条数默认值」的顺序确定每个分段是否参与计算。
   ///
@@ -472,7 +556,8 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   /// 单个分段的启用状态：显式设置优先，其次按条数是否达到标准要求。
   bool _enabledFor(String itemId, GbSegment segment, GbSegmentSpec? spec) {
     if (spec != null && spec.discard) return true;
-    final bool? override = _segmentEnabledOverride[_bindKey(itemId, segment.key)];
+    final bool? override =
+        _segmentEnabledOverride[_bindKey(itemId, segment.key)];
     if (override != null) return override;
     if (spec == null) return true;
     return segment.samples.length >= spec.required;
@@ -634,8 +719,9 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
     setState(() {
       _rangeKey = next;
       // 量程变化后判定限、适用项与分段键都会变，分段启用记忆随之失效，
-      // 重新按「有数据的项 + 够条数的分段」推导默认值。
+      // 重新按「有数据的项 + 够条数的分段」推导默认值；跨项分配也必须重算。
       _segmentEnabledOverride.clear();
+      _allocCache = null;
       _selectItemsWithData();
       _rebuildSegments();
     });
@@ -759,15 +845,13 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   void _resetSegmentBinding(VerificationItem item, GbSegmentSpec spec) {
     setState(() {
       _manualBindings.remove(_bindKey(item.id, spec.key));
-      final List<GbSegment> auto = _autoBind(item.id, _selectedSamples);
+      final List<GbSegment> auto = _autoBind(item.id);
       GbSegment? restored;
       for (final GbSegment segment in auto) {
         if (segment.key == spec.key) restored = segment;
       }
       if (restored != null) {
-        final List<GbSegment> current = <GbSegment>[
-          ...?_segments[item.id],
-        ];
+        final List<GbSegment> current = <GbSegment>[...?_segments[item.id]];
         final List<GbSegment> next = <GbSegment>[
           for (final GbSegment segment in current)
             segment.key == spec.key ? restored : segment,
@@ -785,9 +869,7 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
     final Map<String, GbSample> sampleById = <String, GbSample>{};
     for (final GbSegment segment in segs) {
       for (final GbSample sample in segment.samples) {
-        labelsById
-            .putIfAbsent(sample.id, () => <String>[])
-            .add(segment.label);
+        labelsById.putIfAbsent(sample.id, () => <String>[]).add(segment.label);
         sampleById[sample.id] = sample;
       }
     }
@@ -796,9 +878,7 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
       if (labels.length < 2) return;
       final GbSample? sample = sampleById[id];
       if (sample == null) return;
-      final String where = labels
-          .map((String label) => '「$label」')
-          .join('和');
+      final String where = labels.map((String label) => '「$label」').join('和');
       conflicts.add('第 ${sample.index} 行同时出现在$where，请确认');
     });
     if (conflicts.isEmpty) return;
@@ -1076,12 +1156,13 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
           children: <Widget>[
             const Text('计算设置'),
             Text(
-              '${gbItemLabelOfId(_parameterId, fallback: _parameterId)} · '
               '数据集：${widget.dataset.name} · 已选 ${_selectedIds.length} 行',
               style: const TextStyle(fontSize: 11, color: Colors.white70),
             ),
           ],
         ),
+        // 右侧常驻「当前检测项目」标签，点开即可切换（与页首选择器同源）。
+        actions: <Widget>[_buildParameterActionChip()],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -1113,6 +1194,87 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   }
 
   // ---------------------------------------------------------------- 卡片：检测项目
+
+  /// AppBar 右侧的「当前检测项目」标签：点开是四项菜单，选完直接走
+  /// [_switchParameter]（与页首 ChoiceChip 完全同源，任一处切换都会整体重置）。
+  Widget _buildParameterActionChip() {
+    final bool implemented = _standard.implemented;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Center(
+        child: PopupMenuButton<String>(
+          tooltip: '切换检测项目',
+          onSelected: _switchParameter,
+          itemBuilder: (BuildContext ctx) => <PopupMenuEntry<String>>[
+            for (final GbItemOption option in gbItemOptions)
+              PopupMenuItem<String>(
+                value: option.id,
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: Text(
+                        option.label,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: standardById(option.id)?.implemented == true
+                              ? null
+                              : kNeutralGrey,
+                          fontWeight: option.id == _parameterId
+                              ? FontWeight.w600
+                              : null,
+                        ),
+                      ),
+                    ),
+                    if (standardById(option.id)?.implemented !=
+                        true) ...<Widget>[
+                      const SizedBox(width: 6),
+                      _miniTagChip('未内置', kNeutralGrey),
+                    ],
+                    if (option.id == _parameterId) ...<Widget>[
+                      const SizedBox(width: 6),
+                      const Icon(Icons.check, size: 16, color: kPrimaryColor),
+                    ],
+                  ],
+                ),
+              ),
+          ],
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.45)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                // 未内置项目用警示色图标，避免「绿色=可算」的误解。
+                Icon(
+                  implemented ? Icons.science_outlined : Icons.info_outline,
+                  size: 14,
+                  color: implemented ? Colors.white : kWarningColor,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  gbItemLabelOfId(_parameterId, fallback: _parameterId),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Icon(
+                  Icons.arrow_drop_down,
+                  size: 18,
+                  color: Colors.white,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   /// 「检测项目」选择卡：先定项目，再谈数据与验证项。
   ///
@@ -1179,6 +1341,9 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
   }
 
   /// 切换检测项目：重新走一遍初始化（量程 / 验证项 / 分段 / 启用记忆全部重来）。
+  ///
+  /// 四个项目（总磷 / 氨氮 / 总氮 / COD）都能切；未内置标准的项目会落到
+  /// [_buildUnsupportedItemCard] 的说明态，未内置项也能切回总磷。
   void _switchParameter(String parameterId) {
     if (parameterId == _parameterId) return;
     setState(() {
@@ -1189,6 +1354,8 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
       _manualBindings.clear();
       _segmentEnabledOverride.clear();
       _coverageCache.clear();
+      // 跨项分配依赖"该项目有哪些验证项"，换项目必须重算。
+      _allocCache = null;
       _selectItemsWithData();
       _rebuildSegments();
     });
@@ -1617,28 +1784,44 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
     final bool selected = _selectedItemIds.contains(item.id);
     final bool manualEntry = _isManualEntryItem(item.id);
     final List<int> coverage = _dataCoverageOf(item.id);
-    // 用 _itemHasUsableData（含数据有效率 / 条件顺序项的特例），避免误挂提示。
+    // 用 _itemHasUsableData（含"默认不勾"与条件顺序项的特例），避免误挂提示。
     final bool hasData = _itemHasUsableData(item.id);
     final bool partial = coverage[1] > 0 && coverage[0] < coverage[1];
-    // 条件顺序项（电压/浊度/温度）条数可能看起来够，但顺序绑定的数据无法证明
-    // 真的覆盖了各个条件，所以默认不勾选，这里明确告知用户「需手动选择」。
+    // 「需手动选择」= 默认不勾但**并非**因为没数据：
+    // 实际样品比对 / 数据有效率（默认关闭）、电压 / 浊度 / 温度 / 一致性偏差
+    // （段身份靠行序推定）。这类项不挂「无可用数据」，避免误导。
     final bool needsManualPick =
-        !hasData && !manualEntry && _isConditionSequenceItem(item.id);
+        !hasData &&
+        (_isDefaultOffItem(item.id) || _isConditionSequenceItem(item.id));
+    // 「数据行已被优先项占用」= 浓度档位类项目在互斥分配里一条都没分到，
+    // **但**如果给它全部已选行本来是能算出结果的——说明是"被前面的项占走了"，
+    // 而不是"数据集里没有该浓度的数据"（后者仍显示「无可用数据」）。
+    // 典型场景：24 条满档数据被排在最前的「示值误差」整批拿走 → 重复性 0 条。
+    // 这与「数据集里根本没有数据」是两回事，必须分开提示，否则用户会去查 OCR。
+    final bool occupiedByOthers =
+        !hasData &&
+        _isLevelAllocatedItem(item.id) &&
+        (_allocation()[item.id] ?? const <GbSample>[]).isEmpty &&
+        _selectedSamples.isNotEmpty &&
+        _hasUsableDataWithoutAllocation(item.id);
 
-    return FilterChip(
+    final Widget chip = FilterChip(
       label: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Text(item.name, style: const TextStyle(fontSize: 12)),
-          if (!selected && !manualEntry && !hasData && !needsManualPick) ...<Widget>[
+          if (!selected && occupiedByOthers) ...<Widget>[
+            const SizedBox(width: 4),
+            _miniTagChip('数据行已被优先项占用，需手动选择分段', kNeutralGrey),
+          ] else if (!selected && needsManualPick) ...<Widget>[
+            const SizedBox(width: 4),
+            _miniTagChip('需手动选择', kNeutralGrey),
+          ] else if (!selected && !manualEntry && !hasData) ...<Widget>[
             const SizedBox(width: 4),
             _miniTagChip(
               partial ? '仅 ${coverage[0]}/${coverage[1]} 个分段有数据' : '无可用数据',
               kNeutralGrey,
             ),
-          ] else if (!selected && needsManualPick) ...<Widget>[
-            const SizedBox(width: 4),
-            _miniTagChip('需手动选择', kNeutralGrey),
           ],
         ],
       ),
@@ -1646,6 +1829,15 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
       onSelected: (bool v) => _toggleItem(item.id, v),
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+    if (!occupiedByOthers) return chip;
+    // 长按/悬停给出恢复路径：勾选本项 → 用分段卡里的「重新选择该段数据」手动挑行。
+    return Tooltip(
+      message:
+          '同一批数据行不会在两个验证项间重复使用；'
+          '如需计算该项，请先勾选它，再用分段卡里的「重新选择该段数据」'
+          '手动挑够标准要求的条数。',
+      child: chip,
     );
   }
 
@@ -1680,7 +1872,9 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
             )
           else ...<Widget>[
             Text(
-              '按「${GbCalculator.rangeLabel(_rangeKey)}」自动分组；'
+              '已按「${GbCalculator.rangeLabel(_rangeKey)}」把已选数据行'
+              '顺序分配给各验证项（示值误差优先取前 6 条，重复性再取下 6 条，'
+              '互不重复）；每个验证项再按浓度档自动分组。'
               '每段左侧「参与计算」可单独勾选——只有部分浓度档数据时，'
               '只需勾选有数据的那几段。'
               '缺口为红色、超出为橙色（超出部分计算时会被截断）。'
@@ -1767,7 +1961,11 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Icon(Icons.check_box_outline_blank, size: 15, color: kNeutralGrey),
+                Icon(
+                  Icons.check_box_outline_blank,
+                  size: 15,
+                  color: kNeutralGrey,
+                ),
                 SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -1815,8 +2013,10 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
+                    // 引擎第 9 轮起改为「按已测档位出结论」：不再因覆盖不全降级，
+                    // 因此这里不能再说「结论将被标注为无法判定」。
                     '本次仅验证 ${coverage[0]}/${coverage[1]} 个分段，'
-                    '该项结论将标注「无法判定（仅作记录）」。',
+                    '该项将按已测档位出结论（未测档位不参与判定）。',
                     style: const TextStyle(
                       fontSize: 11.5,
                       color: kWarningColor,
@@ -1833,11 +2033,7 @@ class _CalcSetupPageState extends State<CalcSetupPage> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Icon(
-                  Icons.info_outline,
-                  size: 15,
-                  color: kWarningColor,
-                ),
+                const Icon(Icons.info_outline, size: 15, color: kWarningColor),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -2735,7 +2931,9 @@ class _RowPickerSheetState extends State<_RowPickerSheet> {
                             if (usage.isNotEmpty) ...<Widget>[
                               const SizedBox(width: 6),
                               ConstrainedBox(
-                                constraints: const BoxConstraints(maxWidth: 156),
+                                constraints: const BoxConstraints(
+                                  maxWidth: 156,
+                                ),
                                 child: _crossUsageTag(usage),
                               ),
                             ],
@@ -2810,11 +3008,7 @@ Widget _miniTagChip(String label, Color color) {
     ),
     child: Text(
       label,
-      style: TextStyle(
-        fontSize: 10,
-        color: color,
-        fontWeight: FontWeight.w600,
-      ),
+      style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600),
     ),
   );
 }
@@ -2823,8 +3017,7 @@ Widget _miniTagChip(String label, Color color) {
 ///
 /// 与 [_miniTagChip] 的区别：允许超长名称截断，避免行标题溢出。
 Widget _crossUsageTag(Set<String> names) {
-  final String label =
-      '已被${names.map((String name) => '「$name」').join()}选定';
+  final String label = '已被${names.map((String name) => '「$name」').join()}选定';
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
     decoration: BoxDecoration(
