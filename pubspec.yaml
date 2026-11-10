@@ -2,7 +2,7 @@ name: water_quality_detector_assistant
 description: "水质检测仪助手"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 0.6.6+6
 
 environment:
   sdk: ^3.13.4

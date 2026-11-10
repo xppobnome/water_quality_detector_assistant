@@ -70,3 +70,15 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Android release 签名密钥与密码配置（切勿入库）
+/android/key.properties
+/android/app/*.jks
+/android/app/*.keystore
+
+# 发布产物压缩包
+/dist/
+
+# Gitee 私人令牌（切勿入库）
+.gitee-token
+/.gitee/
